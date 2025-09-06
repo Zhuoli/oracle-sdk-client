@@ -16,6 +16,7 @@ class AuthType(str, Enum):
 
 class LifecycleState(str, Enum):
     """Common lifecycle states in OCI."""
+    CREATING = "CREATING"
     PROVISIONING = "PROVISIONING"
     RUNNING = "RUNNING"
     ACTIVE = "ACTIVE"

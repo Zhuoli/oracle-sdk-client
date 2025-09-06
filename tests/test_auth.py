@@ -35,9 +35,16 @@ class TestOCIAuthenticator:
     @patch("src.oci_client.auth.oci.config.from_file")
     def test_load_config_session_token(self, mock_from_file, mock_path, mock_config, mock_oci_config_dict):
         """Test loading config with session token."""
-        # Setup
-        mock_path.home.return_value = Path("/home/user")
-        mock_path.return_value.exists.return_value = True
+        # Setup mock Path behavior
+        mock_home = MagicMock()
+        mock_oci_path = MagicMock()
+        mock_config_file = MagicMock()
+        
+        mock_path.home.return_value = mock_home
+        mock_home.__truediv__.return_value = mock_oci_path
+        mock_oci_path.__truediv__.return_value = mock_config_file
+        mock_config_file.exists.return_value = True
+        
         mock_from_file.return_value = mock_oci_config_dict
         
         auth = OCIAuthenticator(mock_config)
@@ -60,8 +67,15 @@ class TestOCIAuthenticator:
             "key_file": "/home/user/.oci/api_key.pem"
         }
         
-        mock_path.home.return_value = Path("/home/user")
-        mock_path.return_value.exists.return_value = True
+        # Setup mock Path behavior
+        mock_home = MagicMock()
+        mock_oci_path = MagicMock()
+        mock_config_file = MagicMock()
+        
+        mock_path.home.return_value = mock_home
+        mock_home.__truediv__.return_value = mock_oci_path
+        mock_oci_path.__truediv__.return_value = mock_config_file
+        mock_config_file.exists.return_value = True
         mock_from_file.return_value = api_key_config
         
         auth = OCIAuthenticator(mock_config)
@@ -76,9 +90,12 @@ class TestOCIAuthenticator:
         mock_config.security_token_file = "/path/to/token"
         mock_config.key_file = "/path/to/key.pem"
         
-        with patch("src.oci_client.auth.Path") as mock_path:
+        with patch("src.oci_client.auth.Path") as mock_path, \
+             patch("src.oci_client.auth.time.time", return_value=1234567900):
+            mock_path_instance = MagicMock()
+            mock_path.return_value = mock_path_instance
             mock_path_instance.stat.return_value.st_mtime = 1234567890
-            mock_path.ctime.return_value = 1234567900
+            mock_path_instance.exists.return_value = True
             
             auth = OCIAuthenticator(mock_config)
             auth_type = auth._determine_auth_type()
