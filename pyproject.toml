@@ -1,0 +1,60 @@
+[tool.poetry]
+name = "oci-python-client"
+version = "0.1.0"
+description = "A Python client for Oracle Cloud Infrastructure using session token authentication"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+packages = [{include = "oci_client", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+oci = "^2.126.0"
+requests = "^2.31.0"
+pydantic = "^2.5.0"
+python-dotenv = "^1.0.0"
+rich = "^13.7.0"  # For better console output
+tenacity = "^8.2.3"  # For retry logic
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-cov = "^4.1.0"
+pytest-mock = "^3.12.0"
+black = "^24.0.0"
+isort = "^5.13.0"
+flake8 = "^7.0.0"
+mypy = "^1.8.0"
+pre-commit = "^3.6.0"
+pytest-asyncio = "^0.21.0"
+
+[tool.poetry.scripts]
+oci-client = "oci_client.cli:main"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py39']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_any_unimported = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --cov=src/oci_client --cov-report=term-missing"
