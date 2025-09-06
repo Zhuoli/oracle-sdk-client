@@ -1,6 +1,7 @@
 """Authentication module for OCI client."""
 
 import os
+import time
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 import logging
@@ -61,7 +62,12 @@ class OCIAuthenticator:
     def _load_config(self) -> Dict[str, Any]:
         """Load OCI configuration from file."""
         try:
-            config_file = Path.home() / ".oci" / "config"
+            # Use provided config file path or default to ~/.oci/config
+            if self.config.config_file:
+                config_file = Path(self.config.config_file)
+            else:
+                config_file = Path.home() / ".oci" / "config"
+                
             if not config_file.exists():
                 raise FileNotFoundError(f"OCI config file not found: {config_file}")
             
@@ -102,7 +108,7 @@ class OCIAuthenticator:
             
             # Check token file age (tokens expire after 1 hour)
             token_age_hours = (
-                (Path.ctime(Path.cwd()) - token_file.stat().st_mtime) / 3600
+                (time.time() - token_file.stat().st_mtime) / 3600
             )
             if token_age_hours > 1:
                 console.print(

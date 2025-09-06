@@ -75,6 +75,7 @@ class OCIConfig(BaseModel):
     
     region: str
     profile_name: str = "DEFAULT"
+    config_file: Optional[str] = None
     tenancy: Optional[str] = None
     user: Optional[str] = None
     fingerprint: Optional[str] = None

@@ -39,7 +39,11 @@ class OCIClient:
             config_file: Optional path to config file (defaults to ~/.oci/config)
             retry_strategy: Optional retry strategy for API calls
         """
-        self.config = OCIConfig(region=region, profile_name=profile_name)
+        self.config = OCIConfig(
+            region=region, 
+            profile_name=profile_name,
+            config_file=config_file
+        )
         self.authenticator = OCIAuthenticator(self.config)
         self.oci_config: Optional[Dict[str, Any]] = None
         self.signer: Optional[Any] = None
