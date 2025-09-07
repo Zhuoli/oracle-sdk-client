@@ -25,8 +25,13 @@ cd oci-python-client
 # Install dependencies
 poetry install
 
-# Activate virtual environment
-poetry shell
+# Run commands in the virtual environment using 'poetry run'
+# No need to activate - just prefix commands with 'poetry run'
+
+# Alternative: Get the virtual environment path and activate manually
+# poetry env info --path
+# source $(poetry env info --path)/bin/activate  # On Unix/macOS
+# $(poetry env info --path)\Scripts\activate.bat  # On Windows
 ```
 
 ### Using pip
@@ -112,6 +117,9 @@ This is useful for:
 ### Basic Usage
 
 ```python
+# Run with: poetry run python your_script.py
+# or after activating environment: python your_script.py
+
 from src.oci_client.client import OCIClient
 from src.oci_client.models import LifecycleState
 
