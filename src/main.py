@@ -34,7 +34,7 @@ console = Console()
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="OCI Python Client Demo - List OKE & ODO instances",
+        description="OCI Python Client Demo - List OKE, ODO & Bastion instances",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -208,9 +208,9 @@ def display_connection_info(client: OCIClient) -> None:
 
 
 def main():
-    """Main function to demonstrate OKE and ODO instance listing with YAML configuration."""
-    console.print("[bold green]🌟 OCI Python Client Demo - OKE & ODO Instances[/bold green]")
-    console.print("This demo will list OKE cluster instances and ODO instances using YAML configuration.\n")
+    """Main function to demonstrate OKE, ODO instance and bastion listing with YAML configuration."""
+    console.print("[bold green]🌟 OCI Python Client Demo - OKE, ODO & Bastion Instances[/bold green]")
+    console.print("This demo will list OKE cluster instances, ODO instances, and bastions using YAML configuration.\n")
     
     # Parse command line arguments
     args = parse_arguments()
@@ -236,6 +236,7 @@ def main():
     # Process each region:compartment pair
     all_oke_instances = []
     all_odo_instances = []
+    all_bastions = []
     
     for region, compartment_id in region_compartments.items():
         console.print(f"\n[bold blue]🌍 Processing Region: {region}[/bold blue]")
@@ -326,6 +327,37 @@ def main():
                     console.print(f"[dim]No ODO instances found in {region}[/dim]")
             except Exception as e:
                 console.print(f"[red]Error listing ODO instances in {region}: {e}[/red]")
+            
+            # List Bastions for this region/compartment
+            console.print(f"\n[bold cyan]🛡️  Bastions in {region}[/bold cyan]")
+            try:
+                bastions = client.list_bastions(compartment_id=compartment_id)
+                if bastions:
+                    all_bastions.extend(bastions)
+                    console.print(f"[green]Found {len(bastions)} bastions in {region}[/green]")
+                    
+                    # Display in table format
+                    table = Table(title=f"Bastions - {region}")
+                    table.add_column("Bastion Name", style="cyan")
+                    table.add_column("Type", style="magenta")
+                    table.add_column("Max Session TTL", style="yellow")
+                    table.add_column("Lifecycle State", style="green")
+                    table.add_column("Target Subnet", style="blue")
+                    
+                    for bastion in bastions[:5]:  # Show first 5 per region
+                        bastion_name = bastion.bastion_name or "N/A"
+                        bastion_type = bastion.bastion_type.value if bastion.bastion_type else "N/A"
+                        max_ttl = f"{bastion.max_session_ttl // 3600}h" if bastion.max_session_ttl else "N/A"
+                        lifecycle_state = bastion.lifecycle_state.value if bastion.lifecycle_state else "N/A"
+                        target_subnet = bastion.target_subnet_id[:20] + "..." if bastion.target_subnet_id else "N/A"
+                        
+                        table.add_row(bastion_name, bastion_type, max_ttl, lifecycle_state, target_subnet)
+                    
+                    console.print(table)
+                else:
+                    console.print(f"[dim]No bastions found in {region}[/dim]")
+            except Exception as e:
+                console.print(f"[red]Error listing bastions in {region}: {e}[/red]")
                 
         except Exception as e:
             logger.error(f"Failed to initialize OCI client for region {region}: {e}")
@@ -338,6 +370,7 @@ def main():
     console.print(f"  • Total regions processed: {len(region_compartments)}")
     console.print(f"  • Total OKE instances found: {len(all_oke_instances)}")
     console.print(f"  • Total ODO instances found: {len(all_odo_instances)}")
+    console.print(f"  • Total bastions found: {len(all_bastions)}")
     
     # Demonstrate session token functionality
     console.print("\n[bold blue]🔐 Session Token Management Examples:[/bold blue]")
