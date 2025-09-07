@@ -1,13 +1,15 @@
 """Data models for OCI client."""
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
 from enum import Enum
-from pydantic import BaseModel, Field, ConfigDict
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AuthType(str, Enum):
     """Authentication types supported."""
+
     SESSION_TOKEN = "session_token"
     API_KEY = "api_key"
     INSTANCE_PRINCIPAL = "instance_principal"
@@ -16,6 +18,7 @@ class AuthType(str, Enum):
 
 class LifecycleState(str, Enum):
     """Common lifecycle states in OCI."""
+
     CREATING = "CREATING"
     PROVISIONING = "PROVISIONING"
     RUNNING = "RUNNING"
@@ -28,6 +31,7 @@ class LifecycleState(str, Enum):
 
 class BastionType(str, Enum):
     """Types of bastions."""
+
     STANDARD = "STANDARD"
     INTERNAL = "INTERNAL"
 
@@ -35,6 +39,7 @@ class BastionType(str, Enum):
 @dataclass
 class InstanceInfo:
     """Information about an OCI compute instance."""
+
     instance_id: str
     private_ip: str
     subnet_id: str
@@ -51,6 +56,7 @@ class InstanceInfo:
 @dataclass
 class BastionInfo:
     """Information about an OCI bastion."""
+
     bastion_id: str
     target_subnet_id: str
     bastion_name: Optional[str] = None
@@ -62,6 +68,7 @@ class BastionInfo:
 @dataclass
 class SessionInfo:
     """Information about a bastion session."""
+
     session_id: str
     bastion_id: str
     target_resource_id: str
@@ -72,8 +79,9 @@ class SessionInfo:
 
 class OCIConfig(BaseModel):
     """OCI configuration model with validation."""
+
     model_config = ConfigDict(validate_assignment=True)
-    
+
     region: str
     profile_name: str = "DEFAULT"
     config_file: Optional[str] = None
@@ -84,22 +92,23 @@ class OCIConfig(BaseModel):
     security_token_file: Optional[str] = None
     pass_phrase: Optional[str] = None
     auth_type: AuthType = AuthType.SESSION_TOKEN
-    
+
     def is_session_token_auth(self) -> bool:
         """Check if using session token authentication."""
         return self.security_token_file is not None
-    
+
     def is_api_key_auth(self) -> bool:
         """Check if using API key authentication."""
         return (
-            self.key_file is not None 
-            and self.fingerprint is not None 
+            self.key_file is not None
+            and self.fingerprint is not None
             and self.security_token_file is None
         )
 
 
 class RegionInfo(BaseModel):
     """Region information model."""
+
     name: str
     key: str
     realm_key: Optional[str] = None
@@ -109,6 +118,7 @@ class RegionInfo(BaseModel):
 
 class CompartmentInfo(BaseModel):
     """Compartment information model."""
+
     id: str
     name: str
     description: Optional[str] = None

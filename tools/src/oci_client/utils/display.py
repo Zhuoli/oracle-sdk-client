@@ -3,22 +3,25 @@ Display utilities for formatting and presenting OCI resources.
 """
 
 from typing import List
+
 from rich.console import Console
 from rich.table import Table
 
-from ..models import InstanceInfo, BastionInfo
+from ..models import BastionInfo, InstanceInfo
 
 console = Console()
 
 
-def display_configuration_info(project_name: str, stage: str, config_file: str, region_count: int, region_compartments: dict) -> None:
+def display_configuration_info(
+    project_name: str, stage: str, config_file: str, region_count: int, region_compartments: dict
+) -> None:
     """Display configuration information."""
     console.print(f"[bold]Configuration:[/bold]")
     console.print(f"  • Project: {project_name}")
     console.print(f"  • Stage: {stage}")
     console.print(f"  • Config File: {config_file}")
     console.print(f"  • Regions Found: {region_count}")
-    
+
     console.print("\n[bold]Region:Compartment Pairs:[/bold]")
     for region, compartment_id in region_compartments.items():
         console.print(f"  • [cyan]{region}[/cyan]: {compartment_id[:50]}...")
@@ -31,7 +34,9 @@ def display_region_header(region: str) -> None:
 
 def display_session_token_header(profile_name: str) -> None:
     """Display session token creation header."""
-    console.print(f"[bold blue]🔐 Creating Session Token for Profile '{profile_name}'...[/bold blue]")
+    console.print(
+        f"[bold blue]🔐 Creating Session Token for Profile '{profile_name}'...[/bold blue]"
+    )
 
 
 def display_client_initialization(region: str) -> None:
@@ -42,65 +47,65 @@ def display_client_initialization(region: str) -> None:
 def display_oke_instances(region: str, instances: List[InstanceInfo]) -> None:
     """Display OKE instances in a formatted table."""
     console.print(f"\n[bold cyan]🚀 OKE Instances in {region}[/bold cyan]")
-    
+
     if not instances:
         console.print(f"[dim]No OKE instances found in {region}[/dim]")
         return
-    
+
     console.print(f"[green]Found {len(instances)} OKE instances in {region}[/green]")
-    
+
     # Display in table format
     table = Table(title=f"OKE Instances - {region}")
     table.add_column("Cluster", style="cyan")
     table.add_column("Instance", style="magenta")
     table.add_column("Private IP", style="green")
     table.add_column("Shape", style="yellow")
-    
+
     for instance in instances[:5]:  # Show first 5 per region
         cluster_name = instance.cluster_name or "N/A"
         display_name = instance.display_name or instance.instance_id[:20] + "..."
         private_ip = instance.private_ip or "N/A"
         shape = instance.shape or "N/A"
         table.add_row(cluster_name, display_name, private_ip, shape)
-    
+
     console.print(table)
 
 
 def display_odo_instances(region: str, instances: List[InstanceInfo]) -> None:
     """Display ODO instances in a formatted table."""
     console.print(f"\n[bold cyan]🏗️  ODO Instances in {region}[/bold cyan]")
-    
+
     if not instances:
         console.print(f"[dim]No ODO instances found in {region}[/dim]")
         return
-    
+
     console.print(f"[green]Found {len(instances)} ODO instances in {region}[/green]")
-    
+
     # Display in table format
     table = Table(title=f"ODO Instances - {region}")
     table.add_column("Display Name", style="cyan")
     table.add_column("Private IP", style="green")
     table.add_column("Shape", style="yellow")
-    
+
     for instance in instances[:5]:  # Show first 5 per region
         display_name = instance.display_name or "N/A"
         private_ip = instance.private_ip or "N/A"
         shape = instance.shape or "N/A"
         table.add_row(display_name, private_ip, shape)
-    
+
     console.print(table)
 
 
 def display_bastions(region: str, bastions: List[BastionInfo]) -> None:
     """Display bastions in a formatted table."""
     console.print(f"\n[bold cyan]🛡️  Bastions in {region}[/bold cyan]")
-    
+
     if not bastions:
         console.print(f"[dim]No bastions found in {region}[/dim]")
         return
-    
+
     console.print(f"[green]Found {len(bastions)} bastions in {region}[/green]")
-    
+
     # Display in table format
     table = Table(title=f"Bastions - {region}")
     table.add_column("Bastion Name", style="cyan")
@@ -108,16 +113,16 @@ def display_bastions(region: str, bastions: List[BastionInfo]) -> None:
     table.add_column("Max Session TTL", style="yellow")
     table.add_column("Lifecycle State", style="green")
     table.add_column("Target Subnet", style="blue")
-    
+
     for bastion in bastions[:5]:  # Show first 5 per region
         bastion_name = bastion.bastion_name or "N/A"
         bastion_type = bastion.bastion_type.value if bastion.bastion_type else "N/A"
         max_ttl = f"{bastion.max_session_ttl // 3600}h" if bastion.max_session_ttl else "N/A"
         lifecycle_state = bastion.lifecycle_state.value if bastion.lifecycle_state else "N/A"
         target_subnet = bastion.target_subnet_id[:20] + "..." if bastion.target_subnet_id else "N/A"
-        
+
         table.add_row(bastion_name, bastion_type, max_ttl, lifecycle_state, target_subnet)
-    
+
     console.print(table)
 
 
@@ -134,13 +139,17 @@ def display_session_token_examples() -> None:
     """Display session token management examples."""
     console.print("\n[bold blue]🔐 Session Token Management Examples:[/bold blue]")
     console.print("[dim]# Create session token for specific region and profile[/dim]")
-    console.print("[cyan]client.create_session_token('my_profile', 'us-phoenix-1', 'bmc_operator_access')[/cyan]")
+    console.print(
+        "[cyan]client.create_session_token('my_profile', 'us-phoenix-1', 'bmc_operator_access')[/cyan]"
+    )
     console.print()
     console.print("[dim]# Create session token and switch client to use it[/dim]")
     console.print("[cyan]client.create_and_use_session_token('my_profile', 'us-phoenix-1')[/cyan]")
     console.print()
     console.print("[dim]# Equivalent OCI CLI command[/dim]")
-    console.print("[yellow]oci session authenticate --profile-name my_profile --region us-phoenix-1 --tenancy-name bmc_operator_access[/yellow]")
+    console.print(
+        "[yellow]oci session authenticate --profile-name my_profile --region us-phoenix-1 --tenancy-name bmc_operator_access[/yellow]"
+    )
 
 
 def display_completion() -> None:

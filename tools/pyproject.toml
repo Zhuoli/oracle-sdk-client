@@ -3,7 +3,7 @@ name = "oci-python-client"
 version = "0.1.0"
 description = "A Python client for Oracle Cloud Infrastructure using session token authentication"
 authors = ["Your Name <your.email@example.com>"]
-readme = "README.md"
+readme = "../README.md"
 packages = [{include = "oci_client", from = "src"}]
 
 [tool.poetry.dependencies]

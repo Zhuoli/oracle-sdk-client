@@ -142,7 +142,7 @@ make ssh-help
 
 ## 📄 Output
 
-The tool generates an SSH configuration file in the `ssh_configs/` directory, named `ssh_config_<project>_<stage>.txt`, containing:
+The tool generates an SSH configuration file in the `ssh_configs/` directory (created automatically if it doesn't exist), named `ssh_config_<project>_<stage>.txt`, containing:
 
 ### Example SSH Config Entry
 
