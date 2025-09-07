@@ -412,25 +412,49 @@ class OCIClient:
         try:
             bastions = []
             
+            # Only pass valid parameters to the OCI API
             kwargs = {
-                "compartment_id": compartment_id,
-                "lifecycle_state": LifecycleState.ACTIVE.value
+                "compartment_id": compartment_id
             }
-            
-            if bastion_type:
-                kwargs["bastion_type"] = bastion_type.value
             
             response = self.bastion_client.list_bastions(**kwargs)
             
             for bastion in response.data:
+                # Filter by lifecycle_state on the client side
+                if hasattr(bastion, 'lifecycle_state'):
+                    try:
+                        bastion_lifecycle_state = LifecycleState(bastion.lifecycle_state)
+                        if bastion_lifecycle_state != LifecycleState.ACTIVE:
+                            continue  # Skip non-active bastions
+                    except (ValueError, AttributeError):
+                        # If we can't determine lifecycle state, include it
+                        pass
+                
+                # Filter by bastion_type on the client side
+                if bastion_type and hasattr(bastion, 'bastion_type'):
+                    try:
+                        bastion_bastion_type = BastionType(bastion.bastion_type)
+                        if bastion_bastion_type != bastion_type:
+                            continue  # Skip bastions that don't match the requested type
+                    except (ValueError, AttributeError):
+                        # If we can't determine bastion type, include it
+                        pass
+                
+                # Get max session TTL - check multiple possible attribute names
+                max_session_ttl = None
+                for attr_name in ['max_session_ttl_in_seconds', 'max_session_ttl', 'session_ttl']:
+                    if hasattr(bastion, attr_name):
+                        max_session_ttl = getattr(bastion, attr_name)
+                        break
+                
                 bastions.append(
                     BastionInfo(
                         bastion_id=bastion.id,
-                        target_subnet_id=bastion.target_subnet_id,
-                        bastion_name=bastion.name,
-                        bastion_type=BastionType(bastion.bastion_type),
-                        max_session_ttl=bastion.max_session_ttl_in_seconds,
-                        lifecycle_state=LifecycleState(bastion.lifecycle_state)
+                        target_subnet_id=getattr(bastion, 'target_subnet_id', None),
+                        bastion_name=getattr(bastion, 'name', None),
+                        bastion_type=BastionType(bastion.bastion_type) if hasattr(bastion, 'bastion_type') else None,
+                        max_session_ttl=max_session_ttl,
+                        lifecycle_state=LifecycleState(bastion.lifecycle_state) if hasattr(bastion, 'lifecycle_state') else None
                     )
                 )
             
