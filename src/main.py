@@ -4,7 +4,6 @@ Main demonstration script for OCI Python Client.
 Demonstrates listing OKE cluster instances and ODO instances.
 """
 
-import os
 import sys
 import logging
 from typing import Optional
@@ -29,21 +28,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 console = Console()
 
-
-def get_config_from_env() -> tuple[str, str, str, Optional[str]]:
-    """Get configuration from environment variables."""
-    region = os.getenv("OCI_REGION", "us-phoenix-1")
-    profile = os.getenv("OCI_PROFILE", "DEFAULT")
-    compartment_id = os.getenv("OCI_COMPARTMENT_ID")
-    config_file = os.getenv("OCI_CONFIG_FILE")  # Optional custom config file
-    
-    if not compartment_id:
-        console.print("[red]Error: OCI_COMPARTMENT_ID environment variable is required[/red]")
-        console.print("\nSet it with:")
-        console.print("export OCI_COMPARTMENT_ID=ocid1.compartment.oc1..your-compartment-id")
-        sys.exit(1)
-    
-    return region, profile, compartment_id, config_file
 
 
 def display_oke_instances(client: OCIClient, compartment_id: str) -> None:
@@ -158,20 +142,42 @@ def main():
     console.print("[bold green]🌟 OCI Python Client Demo - OKE & ODO Instances[/bold green]")
     console.print("This demo will list OKE cluster instances and ODO instances.\n")
     
-    # Get configuration
+    # Hardcoded configuration values
+    region = "us-phoenix-1"
+    profile = "demo_profile"
+    compartment_id = "ocid1.compartment.oc1..aaaaaaaexample123456789"  # Replace with actual compartment ID
+    config_file = None
+    
+    console.print("[bold]Configuration:[/bold]")
+    console.print(f"  • Region: {region}")
+    console.print(f"  • Profile: {profile}")
+    console.print(f"  • Compartment ID: {compartment_id[:30]}...")
+    if config_file:
+        console.print(f"  • Config File: {config_file}")
+    
+    # Create session token first
+    console.print(f"\n[bold blue]🔐 Creating Session Token for Profile '{profile}'...[/bold blue]")
     try:
-        region, profile, compartment_id, config_file = get_config_from_env()
+        # Initialize a temporary client to create session token
+        temp_client = OCIClient(region=region, profile_name="DEFAULT")  # Use existing profile for token creation
         
-        console.print("[bold]Configuration:[/bold]")
-        console.print(f"  • Region: {region}")
-        console.print(f"  • Profile: {profile}")
-        console.print(f"  • Compartment ID: {compartment_id[:30]}...")
-        if config_file:
-            console.print(f"  • Config File: {config_file}")
+        # Create session token for the demo profile
+        token_success = temp_client.create_session_token(
+            profile_name=profile,
+            region_name=region,
+            tenancy_name="bmc_operator_access"
+        )
         
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Operation cancelled by user.[/yellow]")
-        return 1
+        if not token_success:
+            console.print("[red]Failed to create session token. Using existing authentication...[/red]")
+            profile = "DEFAULT"  # Fall back to DEFAULT profile
+        else:
+            console.print(f"[green]✓ Session token created successfully for profile '{profile}'![/green]")
+            
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not create session token: {e}[/yellow]")
+        console.print("[yellow]Falling back to DEFAULT profile...[/yellow]")
+        profile = "DEFAULT"
     
     # Initialize OCI client
     try:
@@ -190,7 +196,7 @@ def main():
         logger.error(f"Failed to initialize OCI client: {e}")
         console.print(f"[red]Failed to initialize OCI client: {e}[/red]")
         console.print("\n[yellow]Make sure you have configured OCI authentication:[/yellow]")
-        console.print("1. For session token: oci session authenticate --profile-name {profile} --region {region}")
+        console.print(f"1. For session token: oci session authenticate --profile-name {profile} --region {region}")
         console.print("2. For API key: Set up your ~/.oci/config with API key details")
         return 1
     
