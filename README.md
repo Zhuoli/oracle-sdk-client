@@ -419,6 +419,27 @@ export OCI_LOG_LEVEL=DEBUG
 make ssh-sync PROJECT=remote-observer STAGE=dev
 ```
 
+### OKE Instance Detection Troubleshooting
+
+If OKE instances are not being detected correctly, the tool now uses multiple detection methods:
+
+1. **Traditional metadata**: `oke-cluster-display-name` and `oke-initial-node-labels`
+2. **Modern metadata**: `oci.oraclecloud.com/oke-cluster-id` and related fields  
+3. **Kubernetes metadata**: Generic kubernetes-related metadata
+4. **Defined tags**: OKE or Kubernetes-related tag namespaces
+5. **Display name patterns**: Names containing 'oke-', 'k8s-', 'kubernetes', 'node-pool'
+
+**Enable debug logging to see detailed detection analysis:**
+```bash
+export OCI_LOG_LEVEL=DEBUG
+make ssh-sync PROJECT=remote-observer STAGE=dev
+```
+
+**Common solutions:**
+- Check that your OKE instances have proper metadata or tags
+- Verify instances are in RUNNING state
+- Ensure the tool can access the compartment containing your OKE clusters
+
 ## 📞 Support
 
 For issues and questions:

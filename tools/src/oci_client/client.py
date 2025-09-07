@@ -356,21 +356,117 @@ class OCIClient:
         all_instances = self.list_instances(compartment_id, lifecycle_state=LifecycleState.RUNNING)
 
         oke_instances = []
+        logger.info(f"Checking {len(all_instances)} instances for OKE metadata...")
+        
         for instance in all_instances:
-            # Check for OKE metadata
+            is_oke = False
+            detected_cluster_name = None
+            detection_method = None
+
+            # Method 1: Check traditional OKE metadata fields
             cluster_display_name = instance.metadata.get("oke-cluster-display-name")
             node_labels = instance.metadata.get("oke-initial-node-labels", {})
 
             if cluster_display_name and isinstance(node_labels, dict):
                 if "tot.oraclecloud.com/node-pool-name" in node_labels:
-                    # Filter by cluster name if specified
-                    if cluster_name and cluster_display_name != cluster_name:
-                        continue
+                    is_oke = True
+                    detected_cluster_name = cluster_display_name
+                    detection_method = "traditional oke-cluster-display-name"
 
-                    instance.cluster_name = cluster_display_name
-                    oke_instances.append(instance)
+            # Method 2: Check for newer OKE metadata patterns
+            if not is_oke:
+                # Check for cluster ID in metadata
+                cluster_id = instance.metadata.get("oci.oraclecloud.com/oke-cluster-id") or \
+                           instance.metadata.get("oke-cluster-id")
+                
+                if cluster_id:
+                    is_oke = True
+                    detected_cluster_name = instance.metadata.get("oci.oraclecloud.com/oke-cluster-name") or \
+                                          instance.metadata.get("oke-cluster-name") or \
+                                          cluster_id
+                    detection_method = "cluster-id metadata"
 
+            # Method 3: Check for Kubernetes-related metadata
+            if not is_oke:
+                # Look for node pool or kubernetes-related tags
+                k8s_metadata = instance.metadata.get("kubernetes", {})
+                if k8s_metadata or "node-pool" in str(instance.metadata).lower():
+                    is_oke = True
+                    detected_cluster_name = k8s_metadata.get("cluster-name") if isinstance(k8s_metadata, dict) else "unknown"
+                    detection_method = "kubernetes metadata"
+
+            # Method 4: Check defined tags for OKE patterns  
+            if not is_oke and hasattr(instance, 'defined_tags'):
+                for tag_namespace, tags in instance.defined_tags.items():
+                    if 'oke' in tag_namespace.lower() or 'kubernetes' in tag_namespace.lower():
+                        is_oke = True
+                        detected_cluster_name = tags.get('cluster-name', tags.get('cluster_name', 'unknown'))
+                        detection_method = f"defined tags ({tag_namespace})"
+                        break
+
+            # Method 5: Check display name patterns
+            if not is_oke and instance.display_name:
+                display_name_lower = instance.display_name.lower()
+                if any(pattern in display_name_lower for pattern in ['oke-', 'k8s-', 'kubernetes', 'node-pool']):
+                    is_oke = True
+                    detected_cluster_name = "detected-from-name"
+                    detection_method = "display name pattern"
+
+            if is_oke:
+                # Filter by cluster name if specified
+                if cluster_name and detected_cluster_name != cluster_name:
+                    logger.debug(f"Skipping OKE instance {instance.instance_id}: cluster mismatch ({detected_cluster_name} != {cluster_name})")
+                    continue
+
+                instance.cluster_name = detected_cluster_name
+                oke_instances.append(instance)
+                logger.info(f"Found OKE instance {instance.instance_id} in cluster '{detected_cluster_name}' via {detection_method}")
+            else:
+                # Debug: Log instances that weren't detected as OKE
+                logger.debug(f"Instance {instance.instance_id} ({instance.display_name}) - not detected as OKE")
+                if logger.level <= 10:  # DEBUG level
+                    logger.debug(f"  Metadata keys: {list(instance.metadata.keys())}")
+                    if hasattr(instance, 'defined_tags'):
+                        logger.debug(f"  Defined tag namespaces: {list(instance.defined_tags.keys())}")
+
+        if len(oke_instances) == 0 and len(all_instances) > 0:
+            logger.warning("No OKE instances found. Set OCI_LOG_LEVEL=DEBUG to see detailed metadata analysis.")
+            logger.info("You can also check instance metadata manually to identify the correct OKE detection pattern.")
+        
+        logger.info(f"Found {len(oke_instances)} OKE instances total")
         return sorted(oke_instances, key=lambda x: x.cluster_name or "")
+
+    def debug_instance_metadata(self, compartment_id: str, instance_id: Optional[str] = None) -> None:
+        """Debug helper: Print detailed metadata for instances to help identify OKE detection patterns."""
+        all_instances = self.list_instances(compartment_id, lifecycle_state=LifecycleState.RUNNING)
+        
+        if instance_id:
+            # Show specific instance
+            instances_to_show = [inst for inst in all_instances if inst.instance_id == instance_id]
+            if not instances_to_show:
+                logger.error(f"Instance {instance_id} not found")
+                return
+        else:
+            # Show first few instances as examples
+            instances_to_show = all_instances[:3]
+        
+        for instance in instances_to_show:
+            logger.info(f"\n=== Instance {instance.instance_id} ({instance.display_name}) ===")
+            logger.info(f"Metadata keys: {list(instance.metadata.keys())}")
+            logger.info("Metadata content:")
+            for key, value in instance.metadata.items():
+                if isinstance(value, dict):
+                    logger.info(f"  {key}: {list(value.keys())} (dict)")
+                else:
+                    logger.info(f"  {key}: {value}")
+            
+            if hasattr(instance, 'defined_tags'):
+                logger.info("Defined tags:")
+                for tag_namespace, tags in instance.defined_tags.items():
+                    logger.info(f"  {tag_namespace}: {tags}")
+            
+            if hasattr(instance, 'freeform_tags'):
+                logger.info(f"Freeform tags: {instance.freeform_tags}")
 
     def list_odo_instances(self, compartment_id: str) -> List[InstanceInfo]:
         """List ODO (Oracle Data Operations) instances."""
