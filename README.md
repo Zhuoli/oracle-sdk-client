@@ -1,412 +1,366 @@
-# OCI Python Client
+# OCI SSH Sync
 
-A modern Python client for Oracle Cloud Infrastructure (OCI) with optimized session token authentication support.
+**SSH Configuration Generator for Oracle Cloud Infrastructure**
 
-## Features
+OCI SSH Sync is a Python tool that automatically generates SSH configurations for OKE (Oracle Kubernetes Engine) and ODO (Oracle Digital Office) instances across Oracle Cloud Infrastructure regions. It creates SSH config entries with ProxyCommand for secure bastion-based access to your cloud resources.
 
-- ✅ **Session Token Authentication** - Full support for OCI session tokens (recommended)
-- ✅ **API Key Authentication** - Traditional API key authentication
-- ✅ **Automatic Token Refresh** - Refresh expired session tokens automatically
-- ✅ **Lazy Loading** - Service clients are initialized only when needed
-- ✅ **Retry Logic** - Built-in retry mechanisms for transient failures
-- ✅ **Rich Console Output** - Beautiful terminal output with progress indicators
-- ✅ **Type Hints** - Full type hints for better IDE support
-- ✅ **Pydantic Models** - Data validation and serialization
+## 🎯 Purpose
 
-## Installation
+This tool eliminates the manual process of creating SSH configurations for OCI instances by:
 
-### Using Poetry (Recommended)
+1. **Discovering Resources**: Automatically finds OKE clusters and ODO instances across specified regions
+2. **Bastion Matching**: Intelligently matches instances to appropriate bastions for secure access
+3. **Configuration Generation**: Creates ready-to-use SSH config entries with ProxyCommand
+4. **Multi-Region Support**: Handles resources distributed across multiple OCI regions and realms
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.11+ with Poetry
+- OCI CLI installed and configured
+- Access to Oracle Cloud Infrastructure
+- `ossh` command available (Oracle internal tool)
+
+### Installation
 
 ```bash
 # Clone the repository
-git clone <your-repo-url>
+git clone <repository-url>
 cd oci-python-client
 
 # Install dependencies
-poetry install
+make install
 
-# Run commands in the virtual environment using 'poetry run'
-# No need to activate - just prefix commands with 'poetry run'
-
-# Alternative: Get the virtual environment path and activate manually
-# poetry env info --path
-# source $(poetry env info --path)/bin/activate  # On Unix/macOS
-# $(poetry env info --path)\Scripts\activate.bat  # On Windows
+# Set up development environment (optional)
+make dev-setup
 ```
 
-### Using pip
+### Authentication Setup
 
 ```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install package
-pip install -e .
+# Create initial OCI profile for session token creation
+oci session authenticate --profile-name DEFAULT --region us-phoenix-1
 ```
 
-## Configuration
-
-### 1. Setup OCI CLI Configuration
-
-First, ensure you have the OCI CLI installed:
+### Generate SSH Config
 
 ```bash
-pip install oci-cli
+# Generate SSH config for a specific project and stage
+make ssh-sync PROJECT=remote-observer STAGE=dev
+
+# Alternative: Use convenience commands
+make ssh-sync-remote-observer-dev
+make ssh-sync-today-all-staging
 ```
 
-### 2. Create Session Token Authentication (Recommended)
+## 📋 Configuration
 
-Session tokens are more secure and easier to manage than API keys:
+### YAML Configuration File (`meta.yaml`)
 
-```bash
-# Create a new profile with session token
-oci session authenticate \
-  --profile-name ssh_builder_odo \
-  --region us-ashburn-1
+The tool uses a YAML configuration file to define project, stage, and region mappings:
 
-# This will open a browser for authentication
-# The token and keys will be saved in ~/.oci/sessions/
+```yaml
+projects:
+  remote-observer:
+    dev:
+      oc1:
+        us-phoenix-1:
+          compartment_id: ocid1.compartment.oc1..aaaaaaaah3k3f5rksyb5iv...
+    staging:
+      oc1:
+        us-ashburn-1:
+          compartment_id: ocid1.compartment.oc1..aaaaaaaasrzpupgdi2aa7l...
+      oc16:
+        us-westjordan-1:
+          compartment_id: ocid1.compartment.oc16..aaaaaaaaj7b7evofguzwlw...
+    prod:
+      oc17:
+        us-dcc-phoenix-1:
+          compartment_id: ocid1.compartment.oc17..aaaaaaaasaow4j73qa6mf4...
 ```
 
-Your `~/.oci/config` file will look like this:
+### Supported Projects and Stages
 
-```ini
-[ssh_builder_odo]
-fingerprint = b5:57:e2:3c:fc:b5:ca:7b:fb:76:10:3c:92:4f:0e:80
-key_file = /Users/yourname/.oci/sessions/ssh_builder_odo/oci_api_key.pem
-tenancy = ocid1.tenancy.oc1..aaaaaaaagkbzgg6lpzrf47xzy4rjoxg4de6ncfiq2rncmjiujvywfdsfsdf
-region = us-ashburn-1
-security_token_file = /Users/yourname/.oci/sessions/ssh_builder_odo/token
-```
+- **Projects**: `remote-observer`, `today-all`
+- **Stages**: `dev`, `staging`, `prod`
+- **Realms**: `oc1`, `oc16`, `oc17`
 
-### 3. Refresh Session Token
-
-Session tokens expire after 1 hour. To refresh:
-
-```bash
-oci session refresh --profile ssh_builder_odo
-```
-
-Or programmatically:
-
-```python
-client.refresh_auth()
-```
-
-### 4. Custom Config File Location
-
-By default, the client looks for the OCI config file at `~/.oci/config`. You can specify a custom location:
-
-```python
-# Use custom config file location
-client = OCIClient(
-    region="us-ashburn-1",
-    profile_name="my_profile",
-    config_file="/custom/path/to/oci/config"
-)
-```
-
-This is useful for:
-- Multi-tenant applications with different OCI configurations
-- CI/CD environments with mounted config files
-- Development setups with multiple OCI accounts
-
-## Usage
+## 🖥️ Usage Examples
 
 ### Basic Usage
 
-```python
-# Run with: poetry run python your_script.py
-# or after activating environment: python your_script.py
+```bash
+# Generate SSH config for remote-observer development
+make ssh-sync PROJECT=remote-observer STAGE=dev
 
-from src.oci_client.client import OCIClient
-from src.oci_client.models import LifecycleState
-
-# Initialize client with session token auth (default config file)
-client = OCIClient(
-    region="us-ashburn-1",
-    profile_name="ssh_builder_odo"
-)
-
-# Or specify a custom config file path
-client = OCIClient(
-    region="us-ashburn-1",
-    profile_name="ssh_builder_odo",
-    config_file="/path/to/custom/oci/config"
-)
-
-# Test connection
-if client.test_connection():
-    print("Connected to OCI!")
-
-# List running instances
-instances = client.list_instances(
-    compartment_id="ocid1.compartment.oc1..xxxxx",
-    lifecycle_state=LifecycleState.RUNNING
-)
-
-for instance in instances:
-    print(f"{instance.display_name}: {instance.private_ip}")
+# Generate SSH config for today-all staging
+make ssh-sync PROJECT=today-all STAGE=staging
 ```
 
-### Context Manager
+### Convenience Commands
 
-```python
-with OCIClient(region="us-phoenix-1", profile_name="my_profile") as client:
-    instances = client.list_instances(compartment_id="...")
-    # Client cleanup happens automatically
+```bash
+# Development environments
+make ssh-sync-remote-observer-dev
+make ssh-sync-today-all-dev
+
+# Staging environments
+make ssh-sync-remote-observer-staging
+make ssh-sync-today-all-staging
+
+# Production environments
+make ssh-sync-remote-observer-prod
+make ssh-sync-today-all-prod
 ```
 
-### List OKE Cluster Instances
+### Get Help
 
-```python
-# List all OKE instances
-oke_instances = client.list_oke_instances(
-    compartment_id="ocid1.compartment.oc1..xxxxx"
-)
+```bash
+# Show all available commands
+make help
 
-# Filter by specific cluster
-oke_instances = client.list_oke_instances(
-    compartment_id="ocid1.compartment.oc1..xxxxx",
-    cluster_name="my-k8s-cluster"
-)
+# Show detailed SSH sync configuration help
+make ssh-help
 ```
 
-### List ODO Instances
+## 📄 Output
 
-```python
-odo_instances = client.list_odo_instances(
-    compartment_id="ocid1.compartment.oc1..xxxxx"
-)
+The tool generates an SSH configuration file named `ssh_config_<project>_<stage>.txt` containing:
 
-for instance in odo_instances:
-    print(f"ODO Instance: {instance.display_name}")
+### Example SSH Config Entry
+
+```bash
+# SSH Config for remote-observer (dev)
+# Generated by OCI SSH Sync
+
+Host remote-observer-dev-phx-oc1-1
+  HostName ocid1.bastion.oc1..bastion123-10.0.1.10
+  ProxyCommand ossh proxy -u %r --overlay-bastion --region us-phoenix-1 --compartment ocid1.compartment.oc1..comp123 -- ssh -A -p 22 ztb-internal.bastion.us-phoenix-1.oci.oraclecloud.com -s proxy:%h:%p
+  # Type: OKE
+  # Private IP: 10.0.1.10
+  # Region: us-phoenix-1
+  # Cluster: my-cluster
+
+Host odo-remote-observer-dev-phx-oc1-1
+  HostName ocid1.bastion.oc1..bastion123-10.0.2.20
+  ProxyCommand ossh proxy -u %r --overlay-bastion --region us-phoenix-1 --compartment ocid1.compartment.oc1..comp123 -- ssh -A -p 22 ztb-internal.bastion.us-phoenix-1.oci.oraclecloud.com -s proxy:%h:%p
+  # Type: ODO
+  # Private IP: 10.0.2.20
+  # Region: us-phoenix-1
 ```
 
-### List Compartments
+### Using the Generated Config
 
-```python
-# List compartments
-compartments = client.list_compartments(
-    parent_compartment_id="ocid1.compartment.oc1..xxxxx",
-    include_root=True
-)
+```bash
+# Copy to your SSH config
+cat ssh_config_remote-observer_dev.txt >> ~/.ssh/config
 
-for comp in compartments:
-    print(f"Compartment: {comp['name']} - {comp['id']}")
+# Connect to an instance
+ssh remote-observer-dev-phx-oc1-1
 ```
 
-### Get Region Information
+## 🏗️ Architecture
 
-```python
-# Get current region information
-region_info = client.get_region_info()
-print(f"Region: {region_info.name}")
-print(f"Region Key: {region_info.key}")
-print(f"Is Home Region: {region_info.is_home_region}")
+### Project Structure
 
-# Get internal domain (Oracle-specific environments)
-internal_domain = client.get_internal_domain()
-if internal_domain:
-    print(f"Internal Domain: {internal_domain}")
+```
+src/
+├── oci_client/                 # OCI client library
+│   ├── client.py              # Main OCI client
+│   ├── models.py              # Data models
+│   ├── auth.py                # Authentication handling
+│   └── utils/                 # Utility modules
+│       ├── config.py          # YAML configuration loading
+│       ├── display.py         # Rich console output
+│       ├── resources.py       # Resource collection
+│       ├── session.py         # Session token management
+│       └── ssh_config_generator.py  # SSH config generation
+├── ssh_sync.py                # Main SSH sync application
+└── ssh_config_builder.py      # Standalone SSH config builder
 ```
 
-## Advanced Features
+### Key Components
 
-### Custom Retry Strategy
+1. **Session Management**: Optimized session token creation and reuse
+2. **Resource Discovery**: Automated OKE and ODO instance discovery
+3. **Bastion Matching**: Intelligent subnet-to-bastion mapping
+4. **SSH Config Generation**: ProxyCommand-based SSH configuration
+5. **Multi-Region Support**: Cross-region resource handling
 
-```python
-from oci.retry import RetryStrategyBuilder
+## 🛠️ Development
 
-# Create custom retry strategy
-retry_strategy = RetryStrategyBuilder(
-    max_attempts=5,
-    service_error_retry_config={
-        429: {'base_sleep_time': 2, 'exponential_growth_factor': 2}
-    }
-).get_retry_strategy()
+### Available Commands
 
-client = OCIClient(
-    region="us-phoenix-1",
-    profile_name="my_profile",
-    retry_strategy=retry_strategy
-)
+```bash
+# Development setup
+make install              # Install dependencies
+make dev-setup           # Complete development setup
+
+# Code quality
+make format              # Format code with black and isort
+make lint                # Run linting with flake8
+make type-check          # Run type checking with mypy
+
+# Testing
+make test                # Run all tests
+make test-verbose        # Run tests with verbose output
+make test-coverage       # Run tests with coverage
+
+# Cleanup
+make clean               # Clean up temporary files
 ```
 
-### Configuration File Management
-
-```python
-# Initialize with all available parameters
-client = OCIClient(
-    region="us-phoenix-1",
-    profile_name="my_profile",
-    config_file="/path/to/custom/config",  # Custom config file location
-    retry_strategy=retry_strategy
-)
-
-# Access current configuration
-print(f"Using config file: {client.config.config_file or '~/.oci/config (default)'}")
-print(f"Profile: {client.config.profile_name}")
-print(f"Region: {client.config.region}")
-```
-
-### Service-Specific Operations
-
-```python
-# Access underlying OCI SDK clients directly
-compute_client = client.compute_client
-identity_client = client.identity_client
-bastion_client = client.bastion_client
-network_client = client.network_client
-
-# Use native OCI SDK operations
-regions = identity_client.list_regions()
-```
-
-## Development
-
-### Run Tests
+### Running Tests
 
 ```bash
 # Run all tests
 poetry run pytest
 
-# Run with coverage
-poetry run pytest --cov=src/oci_client
+# Run tests with coverage
+poetry run pytest --cov=src/oci_client --cov-report=term-missing
 
 # Run specific test file
-poetry run pytest tests/test_client.py
+poetry run pytest tests/test_client.py -v
 ```
 
-### Code Formatting
+## 🔧 Advanced Configuration
+
+### Custom Configuration File
 
 ```bash
-# Format code with black
-poetry run black src/ tests/
-
-# Sort imports
-poetry run isort src/ tests/
-
-# Type checking
-poetry run mypy src/
+# Use a custom YAML configuration file
+python src/ssh_sync.py remote-observer dev --config-file custom.yaml
 ```
 
-### Pre-commit Hooks
+### Session Token Management
+
+The tool automatically:
+- Creates session tokens for each region when needed
+- Reuses valid existing session tokens (within 50-minute window)
+- Falls back to DEFAULT profile if session creation fails
+
+### Environment Variables
+
+Set these environment variables for additional configuration:
 
 ```bash
-# Install pre-commit hooks
-poetry run pre-commit install
-
-# Run manually
-poetry run pre-commit run --all-files
+export OCI_REGION=us-phoenix-1
+export OCI_CONFIG_FILE=~/.oci/config
 ```
 
-## Project Structure
+## 📚 Examples
 
-```
-oci-python-client/
-├── src/
-│   └── oci_client/
-│       ├── __init__.py       # Package initialization
-│       ├── auth.py           # Authentication handling
-│       ├── client.py         # Main client class
-│       ├── models.py         # Data models
-│       ├── services/         # Service-specific modules
-│       └── utils/            # Utility functions
-├── tests/                    # Test files
-├── examples/                 # Usage examples
-├── pyproject.toml           # Poetry configuration
-└── README.md                # This file
-```
+### Complete Workflow Example
 
-## Common Issues
-
-### Session Token Expired
-
-**Error**: `401 Unauthorized`
-
-**Solution**: Refresh your session token:
 ```bash
-oci session refresh --profile ssh_builder_odo
+# 1. Set up authentication
+oci session authenticate --profile-name DEFAULT --region us-phoenix-1
+
+# 2. Generate SSH config for development environment
+make ssh-sync PROJECT=remote-observer STAGE=dev
+
+# 3. Review the generated config
+cat ssh_config_remote-observer_dev.txt
+
+# 4. Add to your SSH config
+cat ssh_config_remote-observer_dev.txt >> ~/.ssh/config
+
+# 5. Connect to an instance
+ssh remote-observer-dev-phx-oc1-1
 ```
 
-### Profile Not Found
+### Multi-Region Example
 
-**Error**: `Config profile 'ssh_builder_odo' not found`
+The tool automatically handles resources across multiple regions:
 
-**Solution**: Create the profile:
 ```bash
-oci session authenticate --profile-name ssh_builder_odo --region us-ashburn-1
+# This command will process all regions defined in meta.yaml for staging
+make ssh-sync PROJECT=remote-observer STAGE=staging
+
+# Output includes entries for:
+# - us-ashburn-1 (oc1 realm)
+# - us-westjordan-1 (oc16 realm)
 ```
 
-### Missing Dependencies
-
-**Error**: `ModuleNotFoundError: No module named 'oci'`
-
-**Solution**: Install dependencies:
-```bash
-poetry install
-# or
-pip install oci requests pydantic rich tenacity
-```
-
-### Config File Not Found
-
-**Error**: `FileNotFoundError: OCI config file not found: /path/to/config`
-
-**Solution**: Ensure the config file exists or use the correct path:
-```python
-# Check if using correct path
-client = OCIClient(
-    region="us-phoenix-1",
-    profile_name="my_profile",
-    config_file="/correct/path/to/oci/config"  # Verify this path
-)
-
-# Or use default location (no config_file parameter)
-client = OCIClient(
-    region="us-phoenix-1",
-    profile_name="my_profile"  # Will use ~/.oci/config
-)
-```
-
-### Invalid Config File Format
-
-**Error**: `Config profile 'my_profile' not found in config file`
-
-**Solution**: Verify your config file format and profile name:
-```bash
-# Check your config file
-cat ~/.oci/config
-
-# Ensure profile exists
-[my_profile]
-user=ocid1.user.oc1..xxxxx
-fingerprint=aa:bb:cc:dd:ee:ff
-# ... other config
-```
-
-## Security Best Practices
-
-1. **Use Session Tokens**: Prefer session tokens over API keys
-2. **Rotate Tokens**: Refresh tokens regularly (they expire after 1 hour)
-3. **Secure Storage**: Keep your `~/.oci` directory with restrictive permissions (`chmod 700 ~/.oci`)
-4. **Environment Variables**: Use environment variables for sensitive data in production
-5. **Audit Logs**: Monitor OCI audit logs for unusual activity
-
-## Contributing
+## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+3. Make your changes
+4. Run tests (`make test`)
+5. Format code (`make format`)
+6. Commit your changes (`git commit -m 'Add amazing feature'`)
+7. Push to the branch (`git push origin feature/amazing-feature`)
+8. Open a Pull Request
 
-## License
+## 📋 Requirements
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+### System Requirements
 
-## Support
+- Python 3.11+
+- Poetry for dependency management
+- OCI CLI
+- Access to Oracle Cloud Infrastructure
 
-For issues, questions, or contributions, please open an issue on GitHub.
+### Python Dependencies
+
+- `oci` - Oracle Cloud Infrastructure Python SDK
+- `rich` - Rich console output
+- `pyyaml` - YAML configuration parsing
+- `click` - Command line interface
+
+## 🔒 Security
+
+- Session tokens are automatically managed and expire after 1 hour
+- Bastion-based access ensures secure connections to private instances
+- No credentials are stored in the generated SSH config files
+
+## 📈 Monitoring
+
+The tool provides detailed console output including:
+- Resource discovery progress
+- Session token status
+- SSH config generation results
+- Error handling and troubleshooting information
+
+## 🐛 Troubleshooting
+
+### Common Issues
+
+1. **Authentication Failures**
+   ```bash
+   # Ensure OCI CLI is properly configured
+   oci session authenticate --profile-name DEFAULT --region us-phoenix-1
+   ```
+
+2. **No Instances Found**
+   - Verify compartment IDs in `meta.yaml`
+   - Check that resources exist in the specified regions
+
+3. **No Bastions Found**
+   - Ensure internal bastions are deployed in the target compartments
+   - Verify bastion lifecycle state is ACTIVE
+
+### Debug Mode
+
+Enable verbose logging for troubleshooting:
+
+```bash
+# Set debug level logging
+export OCI_LOG_LEVEL=DEBUG
+make ssh-sync PROJECT=remote-observer STAGE=dev
+```
+
+## 📞 Support
+
+For issues and questions:
+
+1. Check the troubleshooting section above
+2. Review the generated logs for error details
+3. Ensure all prerequisites are met
+4. Verify OCI CLI configuration and access
+
+---
+
+**OCI SSH Sync** - Simplifying SSH access to Oracle Cloud Infrastructure resources

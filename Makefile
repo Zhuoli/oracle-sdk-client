@@ -1,19 +1,20 @@
-# Makefile for OCI Python Client
-# Provides convenient commands for development and demonstration
+# Makefile for OCI SSH Sync
+# SSH Configuration Generator for Oracle Cloud Infrastructure
+# Provides convenient commands for development and SSH config generation
 
-.PHONY: help install test demo clean format lint type-check dev-setup
+.PHONY: help install test ssh-sync clean format lint type-check dev-setup
 
 # Default target
 help:
-	@echo "🌟 OCI Python Client - Available Commands"
+	@echo "🔧 OCI SSH Sync - Available Commands"
 	@echo ""
 	@echo "Setup Commands:"
 	@echo "  install       Install dependencies using Poetry"
 	@echo "  dev-setup     Complete development setup (install + pre-commit hooks)"
 	@echo ""
-	@echo "Demo Commands:"
-	@echo "  demo          Run the main demo (OKE & ODO instances listing)"
-	@echo "  demo-help     Show demo configuration help"
+	@echo "SSH Sync Commands:"
+	@echo "  ssh-sync      Generate SSH config for OCI instances"
+	@echo "  ssh-help      Show SSH sync configuration help"
 	@echo ""
 	@echo "Development Commands:"
 	@echo "  test          Run all tests"
@@ -23,14 +24,14 @@ help:
 	@echo "  type-check    Run type checking with mypy"
 	@echo "  clean         Clean up temporary files and caches"
 	@echo ""
-	@echo "Demo Configuration:"
-	@echo "  The demo uses hardcoded values - update src/main.py as needed"
+	@echo "SSH Sync Configuration:"
+	@echo "  Uses meta.yaml configuration file for project/stage/region mapping"
 	@echo ""
 	@echo "Example:"
-	@echo "  make demo"
+	@echo "  make ssh-sync PROJECT=remote-observer STAGE=dev"
 	@echo ""
 	@echo "For detailed configuration help:"
-	@echo "  make demo-help"
+	@echo "  make ssh-help"
 
 # Installation and setup
 install:
@@ -42,11 +43,11 @@ dev-setup: install
 	poetry run pre-commit install
 	@echo "✅ Development environment ready!"
 
-# Demo commands
-demo:
-	@echo "🚀 Running OCI Client Demo (OKE & ODO instances)..."
-	@echo "Usage: make demo PROJECT=<project_name> STAGE=<stage>"
-	@echo "Example: make demo PROJECT=remote-observer STAGE=dev"
+# SSH Sync commands
+ssh-sync:
+	@echo "🔧 Running OCI SSH Sync (Generate SSH config)..."
+	@echo "Usage: make ssh-sync PROJECT=<project_name> STAGE=<stage>"
+	@echo "Example: make ssh-sync PROJECT=remote-observer STAGE=dev"
 	@echo ""
 	@if [ -z "$(PROJECT)" ] || [ -z "$(STAGE)" ]; then \
 		echo "❌ Error: PROJECT and STAGE parameters are required"; \
@@ -56,76 +57,81 @@ demo:
 		echo "  today-all: dev, staging, prod"; \
 		echo ""; \
 		echo "Examples:"; \
-		echo "  make demo PROJECT=remote-observer STAGE=dev"; \
-		echo "  make demo PROJECT=today-all STAGE=staging"; \
-		echo "  make demo PROJECT=remote-observer STAGE=prod"; \
+		echo "  make ssh-sync PROJECT=remote-observer STAGE=dev"; \
+		echo "  make ssh-sync PROJECT=today-all STAGE=staging"; \
+		echo "  make ssh-sync PROJECT=remote-observer STAGE=prod"; \
 		exit 1; \
 	fi
-	poetry run python src/main.py $(PROJECT) $(STAGE)
+	poetry run python src/ssh_sync.py $(PROJECT) $(STAGE)
 
-# Alternative demo targets for convenience
-demo-remote-observer-dev:
-	@echo "🚀 Running demo for remote-observer dev environment..."
-	poetry run python src/main.py remote-observer dev
+# Alternative ssh-sync targets for convenience
+ssh-sync-remote-observer-dev:
+	@echo "🔧 Generating SSH config for remote-observer dev environment..."
+	poetry run python src/ssh_sync.py remote-observer dev
 
-demo-remote-observer-staging:
-	@echo "🚀 Running demo for remote-observer staging environment..."
-	poetry run python src/main.py remote-observer staging
+ssh-sync-remote-observer-staging:
+	@echo "🔧 Generating SSH config for remote-observer staging environment..."
+	poetry run python src/ssh_sync.py remote-observer staging
 
-demo-remote-observer-prod:
-	@echo "🚀 Running demo for remote-observer prod environment..."
-	poetry run python src/main.py remote-observer prod
+ssh-sync-remote-observer-prod:
+	@echo "🔧 Generating SSH config for remote-observer prod environment..."
+	poetry run python src/ssh_sync.py remote-observer prod
 
-demo-today-all-dev:
-	@echo "🚀 Running demo for today-all dev environment..."
-	poetry run python src/main.py today-all dev
+ssh-sync-today-all-dev:
+	@echo "🔧 Generating SSH config for today-all dev environment..."
+	poetry run python src/ssh_sync.py today-all dev
 
-demo-today-all-staging:
-	@echo "🚀 Running demo for today-all staging environment..."
-	poetry run python src/main.py today-all staging
+ssh-sync-today-all-staging:
+	@echo "🔧 Generating SSH config for today-all staging environment..."
+	poetry run python src/ssh_sync.py today-all staging
 
-demo-today-all-prod:
-	@echo "🚀 Running demo for today-all prod environment..."
-	poetry run python src/main.py today-all prod
+ssh-sync-today-all-prod:
+	@echo "🔧 Generating SSH config for today-all prod environment..."
+	poetry run python src/ssh_sync.py today-all prod
 
-demo-help:
-	@echo "🔧 Demo Configuration Help"
+ssh-help:
+	@echo "🔧 SSH Sync Configuration Help"
 	@echo ""
 	@echo "Configuration:"
-	@echo "  The demo uses YAML configuration from meta.yaml file"
+	@echo "  SSH Sync uses YAML configuration from meta.yaml file"
 	@echo "  • Supports multiple projects: remote-observer, today-all"
 	@echo "  • Supports multiple stages: dev, staging, prod"
 	@echo "  • Automatically creates session tokens for each region"
 	@echo ""
-	@echo "What the demo does:"
+	@echo "What SSH Sync does:"
 	@echo "  1. Parses meta.yaml to get region:compartment_id pairs"
 	@echo "  2. Creates session tokens for each region using create_session_token()"
-	@echo "  3. Lists OKE cluster instances across all regions"
-	@echo "  4. Lists ODO instances across all regions"
-	@echo "  5. Shows session token management examples"
+	@echo "  3. Lists OKE cluster instances and ODO instances across all regions"
+	@echo "  4. Finds appropriate bastions for each instance"
+	@echo "  5. Generates SSH config entries with ProxyCommand for bastion access"
+	@echo "  6. Writes SSH configuration to ssh_config_<project>_<stage>.txt"
 	@echo ""
 	@echo "Available Commands:"
-	@echo "  make demo PROJECT=<project> STAGE=<stage>  # Generic demo"
-	@echo "  make demo-remote-observer-dev              # Specific shortcuts"
-	@echo "  make demo-remote-observer-staging"
-	@echo "  make demo-remote-observer-prod"
-	@echo "  make demo-today-all-dev"
-	@echo "  make demo-today-all-staging"
-	@echo "  make demo-today-all-prod"
+	@echo "  make ssh-sync PROJECT=<project> STAGE=<stage>  # Generic command"
+	@echo "  make ssh-sync-remote-observer-dev              # Specific shortcuts"
+	@echo "  make ssh-sync-remote-observer-staging"
+	@echo "  make ssh-sync-remote-observer-prod"
+	@echo "  make ssh-sync-today-all-dev"
+	@echo "  make ssh-sync-today-all-staging"
+	@echo "  make ssh-sync-today-all-prod"
 	@echo ""
 	@echo "Prerequisites:"
 	@echo "  • OCI CLI installed: pip install oci-cli"
 	@echo "  • Valid Oracle Cloud tenancy access"
 	@echo "  • At least one existing OCI profile (DEFAULT) for session token creation"
 	@echo "  • PyYAML package installed (included in dependencies)"
+	@echo "  • ossh command available for ProxyCommand (Oracle internal tool)"
 	@echo ""
 	@echo "Authentication Setup:"
 	@echo "  # Create an initial profile for session token creation:"
 	@echo "  oci session authenticate --profile-name DEFAULT --region us-phoenix-1"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make demo PROJECT=remote-observer STAGE=dev"
-	@echo "  make demo-today-all-staging"
+	@echo "  make ssh-sync PROJECT=remote-observer STAGE=dev"
+	@echo "  make ssh-sync-today-all-staging"
+	@echo ""
+	@echo "Output:"
+	@echo "  SSH config file: ssh_config_<project>_<stage>.txt"
 
 # Testing
 test:

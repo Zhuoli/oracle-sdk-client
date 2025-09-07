@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-Main demonstration script for OCI Python Client.
-Demonstrates listing OKE cluster instances, ODO instances, and bastions.
+OCI SSH Sync - SSH Configuration Generator for Oracle Cloud Infrastructure
+
+This tool synchronizes SSH configurations by:
+1. Discovering OKE and ODO instances across specified regions
+2. Finding appropriate bastions for each instance
+3. Generating SSH config entries with ProxyCommand for bastion access
+4. Writing the configuration to an SSH config file
+
+Usage:
+    python ssh_sync.py <project_name> <stage> [--config-file meta.yaml]
 """
 
 import sys
@@ -38,13 +46,13 @@ logger = logging.getLogger(__name__)
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="OCI Python Client Demo - List OKE, ODO & Bastion instances",
+        description="OCI SSH Sync - Generate SSH config for OCI instances",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py remote-observer dev
-  python main.py today-all staging
-  python main.py remote-observer prod
+  python ssh_sync.py remote-observer dev
+  python ssh_sync.py today-all staging
+  python ssh_sync.py remote-observer prod --config-file custom.yaml
         """
     )
     
@@ -67,13 +75,13 @@ Examples:
     return parser.parse_args()
 
 
-def display_demo_header():
-    """Display the demo introduction."""
+def display_ssh_sync_header():
+    """Display the SSH sync tool introduction."""
     from rich.console import Console
     console = Console()
     
-    console.print("[bold green]🌟 OCI Python Client Demo - OKE, ODO & Bastion Instances[/bold green]")
-    console.print("This demo will list OKE cluster instances, ODO instances, and bastions using YAML configuration.\n")
+    console.print("[bold green]🔧 OCI SSH Sync - SSH Configuration Generator[/bold green]")
+    console.print("This tool generates SSH configurations for OKE and ODO instances using bastion ProxyCommands.\n")
 
 
 def process_region(project_name: str, stage: str, region: str, compartment_id: str) -> tuple:
@@ -110,8 +118,8 @@ def process_region(project_name: str, stage: str, region: str, compartment_id: s
 
 
 def main():
-    """Main function to demonstrate OKE, ODO instance and bastion listing with YAML configuration."""
-    display_demo_header()
+    """Main function to generate SSH configuration for OKE and ODO instances with YAML configuration."""
+    display_ssh_sync_header()
     
     # Parse command line arguments
     args = parse_arguments()
@@ -195,11 +203,12 @@ def main():
         else:
             console.print("[yellow]No SSH config entries could be generated[/yellow]")
     
-    # Show examples
-    display_session_token_examples()
-    
-    # Display completion
-    display_completion()
+    # Display completion message
+    console.print("\n[bold green]✅ SSH Configuration Sync Complete![/bold green]")
+    if region_data and all_ssh_entries:
+        ssh_config_filename = f"ssh_config_{project_name}_{stage}.txt"
+        console.print(f"[green]SSH config saved to: {ssh_config_filename}[/green]")
+        console.print("[dim]You can now use these SSH configurations to connect to your OCI instances.[/dim]")
     
     return 0
 
