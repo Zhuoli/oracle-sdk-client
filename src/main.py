@@ -204,6 +204,25 @@ def main():
         # List ODO instances  
         display_odo_instances(client, compartment_id)
         
+        # Demonstrate session token functionality
+        console.print("\n[bold blue]🔐 Session Token Management:[/bold blue]")
+        
+        if client.config.is_session_token_auth():
+            console.print("[green]✓ Currently using session token authentication[/green]")
+        else:
+            console.print("[yellow]Currently using API key authentication[/yellow]")
+        
+        # Show session token creation examples
+        console.print("\n[bold]Available Session Token Methods:[/bold]")
+        console.print("[dim]# Create a new session token profile[/dim]")
+        console.print("[cyan]client.create_session_token('my_profile', 'us-phoenix-1', 'bmc_operator_access')[/cyan]")
+        console.print()
+        console.print("[dim]# Create session token and switch client to use it[/dim]")
+        console.print("[cyan]client.create_and_use_session_token('my_profile', 'us-phoenix-1')[/cyan]")
+        console.print()
+        console.print("[dim]# Equivalent OCI CLI command[/dim]")
+        console.print("[yellow]oci session authenticate --profile-name my_profile --region us-phoenix-1 --tenancy-name bmc_operator_access[/yellow]")
+        
         console.print("\n[bold green]✅ Demo completed successfully![/bold green]")
         
     except KeyboardInterrupt:

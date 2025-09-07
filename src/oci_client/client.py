@@ -1,6 +1,10 @@
 """Main OCI client module with optimized functionality."""
 
 import logging
+import subprocess
+import webbrowser
+import json
+import time
 from typing import Optional, List, Dict, Any, Union, Tuple
 from functools import lru_cache
 from pathlib import Path
@@ -486,6 +490,212 @@ class OCIClient:
         
         with open(pub_key_path, 'r') as f:
             return f.read().strip()
+    
+    def create_session_token(
+        self,
+        profile_name: str,
+        region_name: str,
+        tenancy_name: str = "bmc_operator_access",
+        config_file_path: Optional[str] = None,
+        timeout_minutes: int = 5
+    ) -> bool:
+        """
+        Create a temporary session token for authenticating with Oracle Cloud Infrastructure.
+        
+        This method is equivalent to running:
+        oci session authenticate --profile-name $profile_name --region $region_name --tenancy-name $tenancy_name
+        
+        Args:
+            profile_name: Name of the OCI profile to create/update
+            region_name: OCI region name (e.g., 'us-phoenix-1', 'us-ashburn-1')
+            tenancy_name: Tenancy name for authentication (default: 'bmc_operator_access')
+            config_file_path: Optional custom path to OCI config file (defaults to ~/.oci/config)
+            timeout_minutes: Timeout for the authentication process in minutes (default: 5)
+            
+        Returns:
+            bool: True if session token was created successfully, False otherwise
+            
+        Raises:
+            RuntimeError: If the OCI CLI is not installed or authentication fails
+            TimeoutError: If the authentication process times out
+        """
+        try:
+            # Check if OCI CLI is available
+            result = subprocess.run(
+                ["oci", "--version"], 
+                capture_output=True, 
+                text=True, 
+                timeout=10
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    "OCI CLI not found. Please install it first: pip install oci-cli"
+                )
+            
+            console.print(f"[blue]Creating session token for profile '{profile_name}'...[/blue]")
+            
+            # Build the OCI session authenticate command
+            cmd = [
+                "oci", "session", "authenticate",
+                "--profile-name", profile_name,
+                "--region", region_name,
+                "--tenancy-name", tenancy_name
+            ]
+            
+            # Add custom config file if specified
+            if config_file_path:
+                cmd.extend(["--config-file", config_file_path])
+            
+            console.print(f"[dim]Running: {' '.join(cmd)}[/dim]")
+            console.print("[yellow]This will open a web browser for authentication...[/yellow]")
+            
+            # Run the authentication command
+            start_time = time.time()
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            # Monitor the process with timeout
+            while process.poll() is None:
+                elapsed = time.time() - start_time
+                if elapsed > (timeout_minutes * 60):
+                    process.terminate()
+                    process.wait(timeout=5)
+                    raise TimeoutError(
+                        f"Session authentication timed out after {timeout_minutes} minutes"
+                    )
+                time.sleep(1)
+            
+            # Get the results
+            stdout, stderr = process.communicate()
+            
+            if process.returncode == 0:
+                console.print("[green]✓ Session token created successfully![/green]")
+                
+                # Try to parse any output for additional info
+                if stdout:
+                    console.print(f"[dim]{stdout.strip()}[/dim]")
+                
+                # Verify the session was created by checking if we can load the config
+                try:
+                    config_path = Path(config_file_path) if config_file_path else Path.home() / ".oci" / "config"
+                    if config_path.exists():
+                        test_config = oci.config.from_file(
+                            file_location=str(config_path),
+                            profile_name=profile_name
+                        )
+                        if test_config.get("security_token_file"):
+                            console.print(
+                                f"[green]Session token file: {test_config['security_token_file']}[/green]"
+                            )
+                    
+                except Exception as e:
+                    logger.warning(f"Could not verify session token creation: {e}")
+                
+                return True
+            else:
+                error_msg = stderr.strip() if stderr else "Unknown error occurred"
+                console.print(f"[red]Failed to create session token: {error_msg}[/red]")
+                
+                # Provide helpful error messages based on common issues
+                if "tenancy" in error_msg.lower():
+                    console.print(
+                        "[yellow]Hint: Try using a different tenancy name or check your tenancy access.[/yellow]"
+                    )
+                elif "region" in error_msg.lower():
+                    console.print(
+                        "[yellow]Hint: Verify the region name is correct (e.g., 'us-phoenix-1').[/yellow]"
+                    )
+                elif "browser" in error_msg.lower():
+                    console.print(
+                        "[yellow]Hint: Make sure you can open a web browser and complete the authentication.[/yellow]"
+                    )
+                
+                return False
+                
+        except subprocess.TimeoutExpired:
+            raise TimeoutError("OCI CLI command timed out")
+        except FileNotFoundError:
+            raise RuntimeError(
+                "OCI CLI not found. Please install it first:\n"
+                "pip install oci-cli\n"
+                "or follow instructions at: https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm"
+            )
+        except Exception as e:
+            logger.error(f"Failed to create session token: {e}")
+            console.print(f"[red]Error creating session token: {e}[/red]")
+            return False
+    
+    def create_and_use_session_token(
+        self,
+        profile_name: str,
+        region_name: str,
+        tenancy_name: str = "bmc_operator_access",
+        config_file_path: Optional[str] = None,
+        timeout_minutes: int = 5
+    ) -> bool:
+        """
+        Create a session token and reinitialize the client to use it.
+        
+        This is a convenience method that:
+        1. Creates a new session token using create_session_token()
+        2. Updates the current client configuration to use the new profile
+        3. Re-authenticates with the new session token
+        
+        Args:
+            profile_name: Name of the OCI profile to create/update
+            region_name: OCI region name
+            tenancy_name: Tenancy name for authentication (default: 'bmc_operator_access')
+            config_file_path: Optional custom path to OCI config file
+            timeout_minutes: Timeout for the authentication process in minutes (default: 5)
+            
+        Returns:
+            bool: True if session token was created and client was updated successfully
+        """
+        try:
+            # Create the session token
+            if not self.create_session_token(
+                profile_name=profile_name,
+                region_name=region_name, 
+                tenancy_name=tenancy_name,
+                config_file_path=config_file_path,
+                timeout_minutes=timeout_minutes
+            ):
+                return False
+            
+            # Update client configuration to use the new profile
+            console.print(f"[blue]Switching client to use profile '{profile_name}'...[/blue]")
+            
+            # Create new config with the session token profile
+            new_config = OCIConfig(
+                region=region_name,
+                profile_name=profile_name,
+                config_file=config_file_path
+            )
+            
+            # Re-initialize authenticator and authenticate
+            self.config = new_config
+            self.authenticator = OCIAuthenticator(self.config)
+            
+            # Clear existing clients so they get re-created with new auth
+            self._compute_client = None
+            self._identity_client = None
+            self._bastion_client = None
+            self._network_client = None
+            
+            # Re-authenticate with new session token
+            self._authenticate()
+            
+            console.print("[green]✓ Client updated to use new session token![/green]")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to create and use session token: {e}")
+            console.print(f"[red]Failed to update client with session token: {e}[/red]")
+            return False
     
     def refresh_auth(self) -> bool:
         """Refresh authentication if using session tokens."""
