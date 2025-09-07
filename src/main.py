@@ -16,7 +16,7 @@ from rich.logging import RichHandler
 # Add current directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-from oci_client.client import OCIClient
+from oci_client.client import OCIClient, create_oci_session_token
 from oci_client.models import LifecycleState
 from oci_client.utils.yamler import get_region_compartment_pairs, ConfigNotFoundError
 
@@ -245,11 +245,8 @@ def main():
         console.print(f"[bold blue]🔐 Creating Session Token for Profile '{target_profile}'...[/bold blue]")
         
         try:
-            # Initialize a temporary client to create session token
-            temp_client = OCIClient(region=region, profile_name="DEFAULT")  # Use existing target_profile for token creation
-            
-            # Create session token for the demo target_profile
-            token_success = temp_client.create_session_token(
+            # Create session token using standalone function (no client needed)
+            token_success = create_oci_session_token(
                 profile_name=target_profile,
                 region_name=region,
                 tenancy_name="bmc_operator_access"
@@ -258,8 +255,6 @@ def main():
             if not token_success:
                 console.print("[red]Failed to create session token. Using DEFAULT target_profile...[/red]")
                 target_profile = "DEFAULT"  # Fall back to DEFAULT target_profile
-            else:
-                console.print(f"[green]✓ Session token created successfully for target_profile '{target_profile}'![/green]")
                 
         except Exception as e:
             console.print(f"[yellow]Warning: Could not create session token: {e}[/yellow]")

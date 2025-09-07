@@ -24,6 +24,103 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
+def create_oci_session_token(
+    profile_name: str,
+    region_name: str,
+    tenancy_name: str = "bmc_operator_access",
+    config_file_path: Optional[str] = None,
+    timeout_minutes: int = 5
+) -> bool:
+    """
+    Standalone function to create OCI session token without requiring an authenticated client.
+    
+    This function directly calls the OCI CLI to create session tokens and is equivalent to:
+    oci session authenticate --profile-name $profile_name --region $region_name --tenancy-name $tenancy_name
+    
+    Args:
+        profile_name: Name of the OCI profile to create/update
+        region_name: OCI region name (e.g., 'us-phoenix-1', 'us-ashburn-1')
+        tenancy_name: Tenancy name for authentication (default: 'bmc_operator_access')
+        config_file_path: Optional custom path to OCI config file (defaults to ~/.oci/config)
+        timeout_minutes: Timeout for the authentication process in minutes (default: 5)
+        
+    Returns:
+        bool: True if session token was created successfully, False otherwise
+    """
+    try:
+        # Check if OCI CLI is available
+        result = subprocess.run(
+            ["oci", "--version"], 
+            capture_output=True, 
+            text=True, 
+            timeout=10
+        )
+        if result.returncode != 0:
+            console.print("[red]OCI CLI not found. Please install it first: pip install oci-cli[/red]")
+            return False
+        
+        console.print(f"[blue]Creating session token for profile '{profile_name}'...[/blue]")
+        
+        # Build the OCI session authenticate command
+        cmd = [
+            "oci", "session", "authenticate",
+            "--profile-name", profile_name,
+            "--region", region_name,
+            "--tenancy-name", tenancy_name
+        ]
+        
+        # Add custom config file if specified
+        if config_file_path:
+            cmd.extend(["--config-file", config_file_path])
+        
+        console.print(f"[dim]Running: {' '.join(cmd)}[/dim]")
+        console.print("[yellow]This will open a web browser for authentication...[/yellow]")
+        console.print("[yellow]Please complete the authentication in your browser.[/yellow]")
+        
+        # Run the authentication command interactively
+        result = subprocess.run(
+            cmd,
+            timeout=timeout_minutes * 60,
+            text=True
+        )
+        
+        # Check if the command was successful
+        if result.returncode == 0:
+            console.print(f"[green]✓ Session token created successfully for profile '{profile_name}'![/green]")
+            
+            # Verify the session was created by checking if we can load the config
+            try:
+                config_path = Path(config_file_path) if config_file_path else Path.home() / ".oci" / "config"
+                if config_path.exists():
+                    test_config = oci.config.from_file(
+                        file_location=str(config_path),
+                        profile_name=profile_name
+                    )
+                    if test_config.get("security_token_file"):
+                        console.print(
+                            f"[dim]Session token file: {test_config['security_token_file']}[/dim]"
+                        )
+                
+            except Exception as e:
+                logger.warning(f"Could not verify session token creation: {e}")
+            
+            return True
+        else:
+            console.print(f"[red]✗ Failed to create session token. Exit code: {result.returncode}[/red]")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        console.print(f"[red]✗ Session authentication timed out after {timeout_minutes} minutes[/red]")
+        return False
+    except FileNotFoundError:
+        console.print("[red]OCI CLI not found. Please install it first: pip install oci-cli[/red]")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to create session token: {e}")
+        console.print(f"[red]Error creating session token: {e}[/red]")
+        return False
+
+
 class OCIClient:
     """Enhanced OCI client with session token support and optimizations."""
     
@@ -548,36 +645,21 @@ class OCIClient:
             
             console.print(f"[dim]Running: {' '.join(cmd)}[/dim]")
             console.print("[yellow]This will open a web browser for authentication...[/yellow]")
+            console.print("[yellow]Please complete the authentication in your browser.[/yellow]")
             
-            # Run the authentication command
-            start_time = time.time()
-            process = subprocess.Popen(
+            # Run the authentication command interactively
+            # This allows the browser to open and user interaction to occur
+            result = subprocess.run(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
+                timeout=timeout_minutes * 60,
+                text=True,
+                # Don't capture output to allow interactive flow
+                # stdin, stdout, stderr will use parent process (terminal)
             )
             
-            # Monitor the process with timeout
-            while process.poll() is None:
-                elapsed = time.time() - start_time
-                if elapsed > (timeout_minutes * 60):
-                    process.terminate()
-                    process.wait(timeout=5)
-                    raise TimeoutError(
-                        f"Session authentication timed out after {timeout_minutes} minutes"
-                    )
-                time.sleep(1)
-            
-            # Get the results
-            stdout, stderr = process.communicate()
-            
-            if process.returncode == 0:
-                console.print("[green]✓ Session token created successfully![/green]")
-                
-                # Try to parse any output for additional info
-                if stdout:
-                    console.print(f"[dim]{stdout.strip()}[/dim]")
+            # Check if the command was successful
+            if result.returncode == 0:
+                console.print(f"[green]✓ Session token created successfully for profile '{profile_name}'![/green]")
                 
                 # Verify the session was created by checking if we can load the config
                 try:
@@ -589,7 +671,7 @@ class OCIClient:
                         )
                         if test_config.get("security_token_file"):
                             console.print(
-                                f"[green]Session token file: {test_config['security_token_file']}[/green]"
+                                f"[dim]Session token file: {test_config['security_token_file']}[/dim]"
                             )
                     
                 except Exception as e:
@@ -597,27 +679,12 @@ class OCIClient:
                 
                 return True
             else:
-                error_msg = stderr.strip() if stderr else "Unknown error occurred"
-                console.print(f"[red]Failed to create session token: {error_msg}[/red]")
-                
-                # Provide helpful error messages based on common issues
-                if "tenancy" in error_msg.lower():
-                    console.print(
-                        "[yellow]Hint: Try using a different tenancy name or check your tenancy access.[/yellow]"
-                    )
-                elif "region" in error_msg.lower():
-                    console.print(
-                        "[yellow]Hint: Verify the region name is correct (e.g., 'us-phoenix-1').[/yellow]"
-                    )
-                elif "browser" in error_msg.lower():
-                    console.print(
-                        "[yellow]Hint: Make sure you can open a web browser and complete the authentication.[/yellow]"
-                    )
-                
+                console.print(f"[red]✗ Failed to create session token. Exit code: {result.returncode}[/red]")
                 return False
                 
         except subprocess.TimeoutExpired:
-            raise TimeoutError("OCI CLI command timed out")
+            console.print(f"[red]✗ Session authentication timed out after {timeout_minutes} minutes[/red]")
+            return False
         except FileNotFoundError:
             raise RuntimeError(
                 "OCI CLI not found. Please install it first:\n"
