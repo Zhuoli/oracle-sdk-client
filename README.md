@@ -89,18 +89,43 @@ Or programmatically:
 client.refresh_auth()
 ```
 
+### 4. Custom Config File Location
+
+By default, the client looks for the OCI config file at `~/.oci/config`. You can specify a custom location:
+
+```python
+# Use custom config file location
+client = OCIClient(
+    region="us-ashburn-1",
+    profile_name="my_profile",
+    config_file="/custom/path/to/oci/config"
+)
+```
+
+This is useful for:
+- Multi-tenant applications with different OCI configurations
+- CI/CD environments with mounted config files
+- Development setups with multiple OCI accounts
+
 ## Usage
 
 ### Basic Usage
 
 ```python
-from oci_client.client import OCIClient
-from oci_client.models import LifecycleState
+from src.oci_client.client import OCIClient
+from src.oci_client.models import LifecycleState
 
-# Initialize client with session token auth
+# Initialize client with session token auth (default config file)
 client = OCIClient(
     region="us-ashburn-1",
     profile_name="ssh_builder_odo"
+)
+
+# Or specify a custom config file path
+client = OCIClient(
+    region="us-ashburn-1",
+    profile_name="ssh_builder_odo",
+    config_file="/path/to/custom/oci/config"
 )
 
 # Test connection
@@ -151,40 +176,32 @@ for instance in odo_instances:
     print(f"ODO Instance: {instance.display_name}")
 ```
 
-### Work with Bastions
+### List Compartments
 
 ```python
-from oci_client.models import BastionType
-
-# List bastions
-bastions = client.list_bastions(
-    compartment_id="ocid1.compartment.oc1..xxxxx",
-    bastion_type=BastionType.INTERNAL
+# List compartments
+compartments = client.list_compartments(
+    parent_compartment_id="ocid1.compartment.oc1..xxxxx",
+    include_root=True
 )
 
-# Find bastion for a specific subnet
-if instances:
-    bastion = client.find_bastion_for_subnet(
-        bastions,
-        instances[0].subnet_id
-    )
-    
-    if bastion:
-        print(f"Found bastion: {bastion.bastion_name}")
+for comp in compartments:
+    print(f"Compartment: {comp['name']} - {comp['id']}")
 ```
 
-### Create Bastion Session
+### Get Region Information
 
 ```python
-# Create a session to connect to an instance
-session = client.create_bastion_session(
-    bastion_id=bastion.bastion_id,
-    target_resource_id=instance.instance_id,
-    target_private_ip=instance.private_ip,
-    session_ttl=10800  # 3 hours
-)
+# Get current region information
+region_info = client.get_region_info()
+print(f"Region: {region_info.name}")
+print(f"Region Key: {region_info.key}")
+print(f"Is Home Region: {region_info.is_home_region}")
 
-print(f"SSH Command: {session.ssh_metadata.get('command')}")
+# Get internal domain (Oracle-specific environments)
+internal_domain = client.get_internal_domain()
+if internal_domain:
+    print(f"Internal Domain: {internal_domain}")
 ```
 
 ## Advanced Features
@@ -207,6 +224,23 @@ client = OCIClient(
     profile_name="my_profile",
     retry_strategy=retry_strategy
 )
+```
+
+### Configuration File Management
+
+```python
+# Initialize with all available parameters
+client = OCIClient(
+    region="us-phoenix-1",
+    profile_name="my_profile",
+    config_file="/path/to/custom/config",  # Custom config file location
+    retry_strategy=retry_strategy
+)
+
+# Access current configuration
+print(f"Using config file: {client.config.config_file or '~/.oci/config (default)'}")
+print(f"Profile: {client.config.profile_name}")
+print(f"Region: {client.config.region}")
 ```
 
 ### Service-Specific Operations
@@ -307,6 +341,42 @@ oci session authenticate --profile-name ssh_builder_odo --region us-ashburn-1
 poetry install
 # or
 pip install oci requests pydantic rich tenacity
+```
+
+### Config File Not Found
+
+**Error**: `FileNotFoundError: OCI config file not found: /path/to/config`
+
+**Solution**: Ensure the config file exists or use the correct path:
+```python
+# Check if using correct path
+client = OCIClient(
+    region="us-phoenix-1",
+    profile_name="my_profile",
+    config_file="/correct/path/to/oci/config"  # Verify this path
+)
+
+# Or use default location (no config_file parameter)
+client = OCIClient(
+    region="us-phoenix-1",
+    profile_name="my_profile"  # Will use ~/.oci/config
+)
+```
+
+### Invalid Config File Format
+
+**Error**: `Config profile 'my_profile' not found in config file`
+
+**Solution**: Verify your config file format and profile name:
+```bash
+# Check your config file
+cat ~/.oci/config
+
+# Ensure profile exists
+[my_profile]
+user=ocid1.user.oc1..xxxxx
+fingerprint=aa:bb:cc:dd:ee:ff
+# ... other config
 ```
 
 ## Security Best Practices
