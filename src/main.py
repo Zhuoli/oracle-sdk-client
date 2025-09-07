@@ -6,7 +6,8 @@ Demonstrates listing OKE cluster instances and ODO instances.
 
 import sys
 import logging
-from typing import Optional
+import argparse
+from typing import Optional, Dict
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
@@ -17,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from oci_client.client import OCIClient
 from oci_client.models import LifecycleState
+from oci_client.utils.yamler import get_region_compartment_pairs, ConfigNotFoundError
 
 # Setup logging
 logging.basicConfig(
@@ -27,6 +29,74 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="OCI Python Client Demo - List OKE & ODO instances",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main.py remote-observer dev
+  python main.py today-all staging
+  python main.py remote-observer prod
+        """
+    )
+    
+    parser.add_argument(
+        'project_name',
+        help='Project name (e.g., remote-observer, today-all)'
+    )
+    
+    parser.add_argument(
+        'stage', 
+        help='Deployment stage (e.g., dev, staging, prod)'
+    )
+    
+    parser.add_argument(
+        '--config-file',
+        default='meta.yaml',
+        help='Path to the YAML configuration file (default: meta.yaml)'
+    )
+    
+    return parser.parse_args()
+
+
+def load_region_compartments(project_name: str, stage: str, config_file: str = 'meta.yaml') -> Dict[str, str]:
+    """
+    Load region:compartment_id pairs from the YAML configuration.
+    
+    Args:
+        project_name: Project name from the YAML file
+        stage: Stage name from the YAML file
+        config_file: Path to the YAML configuration file
+        
+    Returns:
+        Dict[str, str]: Dictionary with region as key and compartment_id as value
+    """
+    try:
+        region_compartments = get_region_compartment_pairs(
+            yaml_file_path=config_file,
+            project_name=project_name,
+            stage=stage
+        )
+        
+        if not region_compartments:
+            raise ValueError(f"No region:compartment_id pairs found for project '{project_name}' stage '{stage}'")
+            
+        return region_compartments
+        
+    except ConfigNotFoundError as e:
+        console.print(f"[red]Configuration Error: {e}[/red]")
+        sys.exit(1)
+    except FileNotFoundError as e:
+        console.print(f"[red]File Error: {e}[/red]")
+        console.print(f"[yellow]Make sure the configuration file exists at: {config_file}[/yellow]")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Unexpected error loading configuration: {e}[/red]")
+        sys.exit(1)
 
 
 
@@ -138,107 +208,154 @@ def display_connection_info(client: OCIClient) -> None:
 
 
 def main():
-    """Main function to demonstrate OKE and ODO instance listing."""
+    """Main function to demonstrate OKE and ODO instance listing with YAML configuration."""
     console.print("[bold green]🌟 OCI Python Client Demo - OKE & ODO Instances[/bold green]")
-    console.print("This demo will list OKE cluster instances and ODO instances.\n")
+    console.print("This demo will list OKE cluster instances and ODO instances using YAML configuration.\n")
     
-    # Hardcoded configuration values
-    region = "us-phoenix-1"
-    profile = "demo_profile"
-    compartment_id = "ocid1.compartment.oc1..aaaaaaaexample123456789"  # Replace with actual compartment ID
-    config_file = None
+    # Parse command line arguments
+    args = parse_arguments()
+    project_name = args.project_name
+    stage = args.stage
+    config_file = args.config_file
     
-    console.print("[bold]Configuration:[/bold]")
-    console.print(f"  • Region: {region}")
-    console.print(f"  • Profile: {profile}")
-    console.print(f"  • Compartment ID: {compartment_id[:30]}...")
-    if config_file:
-        console.print(f"  • Config File: {config_file}")
+    # Load region:compartment_id pairs from YAML configuration
+    console.print("[bold]Loading Configuration...[/bold]")
+    region_compartments = load_region_compartments(project_name, stage, config_file)
     
-    # Create session token first
-    console.print(f"\n[bold blue]🔐 Creating Session Token for Profile '{profile}'...[/bold blue]")
-    try:
-        # Initialize a temporary client to create session token
-        temp_client = OCIClient(region=region, profile_name="DEFAULT")  # Use existing profile for token creation
+    console.print(f"[bold]Configuration:[/bold]")
+    console.print(f"  • Project: {project_name}")
+    console.print(f"  • Stage: {stage}")
+    console.print(f"  • Config File: {config_file}")
+    console.print(f"  • Regions Found: {len(region_compartments)}")
+    
+    # Display found region:compartment pairs
+    console.print("\n[bold]Region:Compartment Pairs:[/bold]")
+    for region, compartment_id in region_compartments.items():
+        console.print(f"  • [cyan]{region}[/cyan]: {compartment_id[:50]}...")
+    
+    # Process each region:compartment pair
+    all_oke_instances = []
+    all_odo_instances = []
+    
+    for region, compartment_id in region_compartments.items():
+        console.print(f"\n[bold blue]🌍 Processing Region: {region}[/bold blue]")
         
-        # Create session token for the demo profile
-        token_success = temp_client.create_session_token(
-            profile_name=profile,
-            region_name=region,
-            tenancy_name="bmc_operator_access"
-        )
+        # Create session token target_profile for this region
+        target_profile = f"demo_{project_name}_{stage}_{region.replace('-', '_')}"
+        console.print(f"[bold blue]🔐 Creating Session Token for Profile '{target_profile}'...[/bold blue]")
         
-        if not token_success:
-            console.print("[red]Failed to create session token. Using existing authentication...[/red]")
-            profile = "DEFAULT"  # Fall back to DEFAULT profile
-        else:
-            console.print(f"[green]✓ Session token created successfully for profile '{profile}'![/green]")
+        try:
+            # Initialize a temporary client to create session token
+            temp_client = OCIClient(region=region, profile_name="DEFAULT")  # Use existing target_profile for token creation
             
-    except Exception as e:
-        console.print(f"[yellow]Warning: Could not create session token: {e}[/yellow]")
-        console.print("[yellow]Falling back to DEFAULT profile...[/yellow]")
-        profile = "DEFAULT"
-    
-    # Initialize OCI client
-    try:
-        console.print("\n[bold]Initializing OCI Client...[/bold]")
-        
-        client_kwargs = {
-            "region": region,
-            "profile_name": profile
-        }
-        if config_file:
-            client_kwargs["config_file"] = config_file
+            # Create session token for the demo target_profile
+            token_success = temp_client.create_session_token(
+                profile_name=target_profile,
+                region_name=region,
+                tenancy_name="bmc_operator_access"
+            )
             
-        client = OCIClient(**client_kwargs)
+            if not token_success:
+                console.print("[red]Failed to create session token. Using DEFAULT target_profile...[/red]")
+                target_profile = "DEFAULT"  # Fall back to DEFAULT target_profile
+            else:
+                console.print(f"[green]✓ Session token created successfully for target_profile '{target_profile}'![/green]")
+                
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not create session token: {e}[/yellow]")
+            console.print("[yellow]Falling back to DEFAULT target_profile...[/yellow]")
+            target_profile = "DEFAULT"
         
-    except Exception as e:
-        logger.error(f"Failed to initialize OCI client: {e}")
-        console.print(f"[red]Failed to initialize OCI client: {e}[/red]")
-        console.print("\n[yellow]Make sure you have configured OCI authentication:[/yellow]")
-        console.print(f"1. For session token: oci session authenticate --profile-name {profile} --region {region}")
-        console.print("2. For API key: Set up your ~/.oci/config with API key details")
-        return 1
+        # Initialize OCI client for this region
+        try:
+            console.print(f"[bold]Initializing OCI Client for region {region}...[/bold]")
+            
+            client = OCIClient(
+                region=region,
+                profile_name=target_profile
+            )
+            
+            # Display connection info for this region
+            display_connection_info(client)
+            
+            # List OKE instances for this region/compartment
+            console.print(f"\n[bold cyan]🚀 OKE Instances in {region}[/bold cyan]")
+            try:
+                oke_instances = client.list_oke_instances(compartment_id=compartment_id)
+                if oke_instances:
+                    all_oke_instances.extend(oke_instances)
+                    console.print(f"[green]Found {len(oke_instances)} OKE instances in {region}[/green]")
+                    
+                    # Display in table format
+                    table = Table(title=f"OKE Instances - {region}")
+                    table.add_column("Cluster", style="cyan")
+                    table.add_column("Instance", style="magenta")
+                    table.add_column("Private IP", style="green")
+                    table.add_column("Shape", style="yellow")
+                    
+                    for instance in oke_instances[:5]:  # Show first 5 per region
+                        cluster_name = instance.cluster_name or "N/A"
+                        display_name = instance.display_name or instance.instance_id[:20] + "..."
+                        private_ip = instance.private_ip or "N/A"
+                        shape = instance.shape or "N/A"
+                        table.add_row(cluster_name, display_name, private_ip, shape)
+                    
+                    console.print(table)
+                else:
+                    console.print(f"[dim]No OKE instances found in {region}[/dim]")
+            except Exception as e:
+                console.print(f"[red]Error listing OKE instances in {region}: {e}[/red]")
+            
+            # List ODO instances for this region/compartment
+            console.print(f"\n[bold cyan]🏗️  ODO Instances in {region}[/bold cyan]")
+            try:
+                odo_instances = client.list_odo_instances(compartment_id=compartment_id)
+                if odo_instances:
+                    all_odo_instances.extend(odo_instances)
+                    console.print(f"[green]Found {len(odo_instances)} ODO instances in {region}[/green]")
+                    
+                    # Display in table format
+                    table = Table(title=f"ODO Instances - {region}")
+                    table.add_column("Display Name", style="cyan")
+                    table.add_column("Private IP", style="green")
+                    table.add_column("Shape", style="yellow")
+                    
+                    for instance in odo_instances[:5]:  # Show first 5 per region
+                        display_name = instance.display_name or "N/A"
+                        private_ip = instance.private_ip or "N/A"
+                        shape = instance.shape or "N/A"
+                        table.add_row(display_name, private_ip, shape)
+                    
+                    console.print(table)
+                else:
+                    console.print(f"[dim]No ODO instances found in {region}[/dim]")
+            except Exception as e:
+                console.print(f"[red]Error listing ODO instances in {region}: {e}[/red]")
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize OCI client for region {region}: {e}")
+            console.print(f"[red]Failed to initialize OCI client for region {region}: {e}[/red]")
+            console.print(f"[yellow]Make sure you have configured OCI authentication for region {region}[/yellow]")
+            continue  # Continue with next region
     
-    try:
-        # Display connection info
-        display_connection_info(client)
-        
-        # List OKE instances
-        display_oke_instances(client, compartment_id)
-        
-        # List ODO instances  
-        display_odo_instances(client, compartment_id)
-        
-        # Demonstrate session token functionality
-        console.print("\n[bold blue]🔐 Session Token Management:[/bold blue]")
-        
-        if client.config.is_session_token_auth():
-            console.print("[green]✓ Currently using session token authentication[/green]")
-        else:
-            console.print("[yellow]Currently using API key authentication[/yellow]")
-        
-        # Show session token creation examples
-        console.print("\n[bold]Available Session Token Methods:[/bold]")
-        console.print("[dim]# Create a new session token profile[/dim]")
-        console.print("[cyan]client.create_session_token('my_profile', 'us-phoenix-1', 'bmc_operator_access')[/cyan]")
-        console.print()
-        console.print("[dim]# Create session token and switch client to use it[/dim]")
-        console.print("[cyan]client.create_and_use_session_token('my_profile', 'us-phoenix-1')[/cyan]")
-        console.print()
-        console.print("[dim]# Equivalent OCI CLI command[/dim]")
-        console.print("[yellow]oci session authenticate --profile-name my_profile --region us-phoenix-1 --tenancy-name bmc_operator_access[/yellow]")
-        
-        console.print("\n[bold green]✅ Demo completed successfully![/bold green]")
-        
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Operation cancelled by user.[/yellow]")
-        return 1
-    except Exception as e:
-        logger.error(f"Demo failed: {e}")
-        console.print(f"[red]Demo failed: {e}[/red]")
-        return 1
+    # Summary
+    console.print(f"\n[bold green]📊 Summary:[/bold green]")
+    console.print(f"  • Total regions processed: {len(region_compartments)}")
+    console.print(f"  • Total OKE instances found: {len(all_oke_instances)}")
+    console.print(f"  • Total ODO instances found: {len(all_odo_instances)}")
     
+    # Demonstrate session token functionality
+    console.print("\n[bold blue]🔐 Session Token Management Examples:[/bold blue]")
+    console.print("[dim]# Create session token for specific region and target_profile[/dim]")
+    console.print("[cyan]client.create_session_token('my_profile', 'us-phoenix-1', 'bmc_operator_access')[/cyan]")
+    console.print()
+    console.print("[dim]# Create session token and switch client to use it[/dim]")
+    console.print("[cyan]client.create_and_use_session_token('my_profile', 'us-phoenix-1')[/cyan]")
+    console.print()
+    console.print("[dim]# Equivalent OCI CLI command[/dim]")
+    console.print("[yellow]oci session authenticate --target_profile-name my_profile --region us-phoenix-1 --tenancy-name bmc_operator_access[/yellow]")
+    
+    console.print("\n[bold green]✅ Multi-region demo completed successfully![/bold green]")
     return 0
 
 

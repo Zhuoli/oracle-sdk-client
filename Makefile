@@ -45,37 +45,87 @@ dev-setup: install
 # Demo commands
 demo:
 	@echo "🚀 Running OCI Client Demo (OKE & ODO instances)..."
-	@echo "Using hardcoded configuration values in main.py"
-	@echo "Note: Update the compartment_id in src/main.py with your actual compartment OCID"
+	@echo "Usage: make demo PROJECT=<project_name> STAGE=<stage>"
+	@echo "Example: make demo PROJECT=remote-observer STAGE=dev"
 	@echo ""
-	poetry run python src/main.py
+	@if [ -z "$(PROJECT)" ] || [ -z "$(STAGE)" ]; then \
+		echo "❌ Error: PROJECT and STAGE parameters are required"; \
+		echo ""; \
+		echo "Available projects and stages from meta.yaml:"; \
+		echo "  remote-observer: dev, staging, prod"; \
+		echo "  today-all: dev, staging, prod"; \
+		echo ""; \
+		echo "Examples:"; \
+		echo "  make demo PROJECT=remote-observer STAGE=dev"; \
+		echo "  make demo PROJECT=today-all STAGE=staging"; \
+		echo "  make demo PROJECT=remote-observer STAGE=prod"; \
+		exit 1; \
+	fi
+	poetry run python src/main.py $(PROJECT) $(STAGE)
+
+# Alternative demo targets for convenience
+demo-remote-observer-dev:
+	@echo "🚀 Running demo for remote-observer dev environment..."
+	poetry run python src/main.py remote-observer dev
+
+demo-remote-observer-staging:
+	@echo "🚀 Running demo for remote-observer staging environment..."
+	poetry run python src/main.py remote-observer staging
+
+demo-remote-observer-prod:
+	@echo "🚀 Running demo for remote-observer prod environment..."
+	poetry run python src/main.py remote-observer prod
+
+demo-today-all-dev:
+	@echo "🚀 Running demo for today-all dev environment..."
+	poetry run python src/main.py today-all dev
+
+demo-today-all-staging:
+	@echo "🚀 Running demo for today-all staging environment..."
+	poetry run python src/main.py today-all staging
+
+demo-today-all-prod:
+	@echo "🚀 Running demo for today-all prod environment..."
+	poetry run python src/main.py today-all prod
 
 demo-help:
 	@echo "🔧 Demo Configuration Help"
 	@echo ""
 	@echo "Configuration:"
-	@echo "  The demo uses hardcoded values in src/main.py:"
-	@echo "  • Region: us-phoenix-1"
-	@echo "  • Profile: demo_profile (created automatically)"
-	@echo "  • Compartment ID: Update this in src/main.py with your actual OCID"
+	@echo "  The demo uses YAML configuration from meta.yaml file"
+	@echo "  • Supports multiple projects: remote-observer, today-all"
+	@echo "  • Supports multiple stages: dev, staging, prod"
+	@echo "  • Automatically creates session tokens for each region"
 	@echo ""
 	@echo "What the demo does:"
-	@echo "  1. Creates a session token for 'demo_profile' using create_session_token()"
-	@echo "  2. Lists OKE cluster instances"
-	@echo "  3. Lists ODO instances"
-	@echo "  4. Shows session token management examples"
+	@echo "  1. Parses meta.yaml to get region:compartment_id pairs"
+	@echo "  2. Creates session tokens for each region using create_session_token()"
+	@echo "  3. Lists OKE cluster instances across all regions"
+	@echo "  4. Lists ODO instances across all regions"
+	@echo "  5. Shows session token management examples"
+	@echo ""
+	@echo "Available Commands:"
+	@echo "  make demo PROJECT=<project> STAGE=<stage>  # Generic demo"
+	@echo "  make demo-remote-observer-dev              # Specific shortcuts"
+	@echo "  make demo-remote-observer-staging"
+	@echo "  make demo-remote-observer-prod"
+	@echo "  make demo-today-all-dev"
+	@echo "  make demo-today-all-staging"
+	@echo "  make demo-today-all-prod"
 	@echo ""
 	@echo "Prerequisites:"
 	@echo "  • OCI CLI installed: pip install oci-cli"
 	@echo "  • Valid Oracle Cloud tenancy access"
 	@echo "  • At least one existing OCI profile (DEFAULT) for session token creation"
+	@echo "  • PyYAML package installed (included in dependencies)"
 	@echo ""
 	@echo "Authentication Setup:"
 	@echo "  # Create an initial profile for session token creation:"
 	@echo "  oci session authenticate --profile-name DEFAULT --region us-phoenix-1"
 	@echo ""
-	@echo "Run the demo:"
-	@echo "  make demo"
+	@echo "Examples:"
+	@echo "  make demo PROJECT=remote-observer STAGE=dev"
+	@echo "  make demo-today-all-staging"
 
 # Testing
 test:
