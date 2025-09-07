@@ -208,6 +208,53 @@ tools/
 4. **SSH Config Generation**: ProxyCommand-based SSH configuration
 5. **Multi-Region Support**: Cross-region resource handling
 
+## 🎯 Intelligent Bastion Selection
+
+The tool uses an advanced algorithm to intelligently pair compute instances with the most appropriate bastions for SSH access.
+
+### How Bastion Matching Works
+
+**Network Topology Understanding:**
+- **Compute Instances** are deployed in target subnets (e.g., private subnets)
+- **Bastions** have a `target_subnet_id` property indicating which subnet they provide access to
+- **Pairing Logic**: Instances in `subnet_A` are matched with bastions where `target_subnet_id == subnet_A`
+
+### Multiple Bastion Selection Algorithm
+
+When multiple bastions can access the same subnet, the tool uses intelligent selection:
+
+1. **Find all matching bastions** with the same `target_subnet_id`
+2. **Single bastion**: Use it immediately
+3. **Multiple bastions**: Apply smart selection logic:
+   - Sort bastions alphabetically by name for deterministic ordering
+   - Use hash-based selection with instance ID for consistent pairing
+   - Same instance always gets the same bastion across multiple runs
+   - Distributes instances across available bastions for load balancing
+
+### Selection Benefits
+
+- ✅ **Deterministic**: Same instance always paired with same bastion
+- ✅ **Consistent**: Multiple runs produce identical SSH configurations
+- ✅ **Load Balanced**: Distributes instances across available bastions
+- ✅ **Transparent**: Logs which bastion was selected and why
+
+### Example Selection Output
+
+```bash
+# Multiple bastions available for subnet-123
+Selected bastion bastion-alpha for instance i-1a2b3c4d (chose 1 of 3 available)
+Selected bastion bastion-beta for instance i-5f6g7h8i (chose 2 of 3 available)
+Selected bastion bastion-alpha for instance i-9j0k1l2m (chose 1 of 3 available)
+```
+
+**Distribution Result:**
+```
+bastion-alpha: 7 instances (70.0%)
+bastion-beta:  3 instances (30.0%)
+```
+
+This ensures optimal resource utilization while maintaining consistent SSH access paths.
+
 ## 🛠️ Development
 
 ### Available Commands

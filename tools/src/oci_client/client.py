@@ -454,13 +454,56 @@ class OCIClient:
             raise RuntimeError(f"Failed to list bastions: {e}")
 
     def find_bastion_for_subnet(
-        self, bastions: List[BastionInfo], subnet_id: str
+        self, bastions: List[BastionInfo], subnet_id: str, instance_id: Optional[str] = None
     ) -> Optional[BastionInfo]:
-        """Find a bastion that can access the given subnet."""
-        for bastion in bastions:
-            if bastion.target_subnet_id == subnet_id:
-                return bastion
-        return None
+        """
+        Find the best bastion that can access the given subnet.
+        
+        When multiple bastions target the same subnet, uses deterministic selection
+        based on instance_id to ensure consistent pairing.
+        
+        Args:
+            bastions: List of available bastions
+            subnet_id: Target subnet ID to find bastion for
+            instance_id: Optional instance ID for deterministic selection
+            
+        Returns:
+            Best matching bastion or None if no match found
+        """
+        # Find all bastions that can access the target subnet
+        matching_bastions = [
+            bastion for bastion in bastions 
+            if bastion.target_subnet_id == subnet_id
+        ]
+        
+        if not matching_bastions:
+            return None
+        
+        if len(matching_bastions) == 1:
+            return matching_bastions[0]
+        
+        # Multiple bastions found - use intelligent selection
+        # Sort bastions by name for deterministic ordering
+        matching_bastions.sort(key=lambda b: b.bastion_name or b.bastion_id)
+        
+        if instance_id:
+            # Use hash-based selection for consistent instance-to-bastion pairing
+            import hashlib
+            hash_value = int(hashlib.md5(instance_id.encode()).hexdigest(), 16)
+            selected_index = hash_value % len(matching_bastions)
+            selected_bastion = matching_bastions[selected_index]
+            
+            # Log the selection for visibility
+            if len(matching_bastions) > 1:
+                logger.info(
+                    f"Selected bastion {selected_bastion.bastion_name or selected_bastion.bastion_id} "
+                    f"for instance {instance_id} (chose {selected_index + 1} of {len(matching_bastions)} available)"
+                )
+            
+            return selected_bastion
+        
+        # Fallback: return first bastion (alphabetically)
+        return matching_bastions[0]
 
     def create_bastion_session(
         self,
