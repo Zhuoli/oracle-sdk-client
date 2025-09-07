@@ -21,7 +21,7 @@ console = Console()
 
 def create_profile_for_region(project_name: str, stage: str, region: str) -> str:
     """Generate profile name for a specific project, stage, and region."""
-    return f"demo_{project_name}_{stage}_{region.replace('-', '_')}"
+    return f"ssh_sync_{project_name}_{stage}_{region.replace('-', '_')}"
 
 
 def check_session_token_validity(profile_name: str, config_file_path: Optional[str] = None) -> bool:

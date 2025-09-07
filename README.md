@@ -36,6 +36,22 @@ make install
 make dev-setup
 ```
 
+### Project Structure
+
+```
+oci-python-client/
+├── tools/                    # All development tools and source code
+│   ├── src/                 # Python source code
+│   ├── tests/               # Unit tests
+│   ├── examples/            # Usage examples
+│   ├── meta.yaml           # Configuration file
+│   ├── pyproject.toml      # Poetry dependencies
+│   └── poetry.lock         # Locked dependencies
+├── ssh_configs/             # Generated SSH configuration files
+├── README.md               # This file
+└── Makefile               # Build and automation commands
+```
+
 ### Authentication Setup
 
 ```bash
@@ -56,7 +72,7 @@ make ssh-sync-today-all-staging
 
 ## 📋 Configuration
 
-### YAML Configuration File (`meta.yaml`)
+### YAML Configuration File (`tools/meta.yaml`)
 
 The tool uses a YAML configuration file to define project, stage, and region mappings:
 
@@ -126,7 +142,7 @@ make ssh-help
 
 ## 📄 Output
 
-The tool generates an SSH configuration file named `ssh_config_<project>_<stage>.txt` containing:
+The tool generates an SSH configuration file in the `ssh_configs/` directory, named `ssh_config_<project>_<stage>.txt`, containing:
 
 ### Example SSH Config Entry
 
@@ -154,7 +170,7 @@ Host odo-remote-observer-dev-phx-oc1-1
 
 ```bash
 # Copy to your SSH config
-cat ssh_config_remote-observer_dev.txt >> ~/.ssh/config
+cat ssh_configs/ssh_config_remote-observer_dev.txt >> ~/.ssh/config
 
 # Connect to an instance
 ssh remote-observer-dev-phx-oc1-1
@@ -162,22 +178,26 @@ ssh remote-observer-dev-phx-oc1-1
 
 ## 🏗️ Architecture
 
-### Project Structure
+### Source Code Structure
 
 ```
-src/
-├── oci_client/                 # OCI client library
-│   ├── client.py              # Main OCI client
-│   ├── models.py              # Data models
-│   ├── auth.py                # Authentication handling
-│   └── utils/                 # Utility modules
-│       ├── config.py          # YAML configuration loading
-│       ├── display.py         # Rich console output
-│       ├── resources.py       # Resource collection
-│       ├── session.py         # Session token management
-│       └── ssh_config_generator.py  # SSH config generation
-├── ssh_sync.py                # Main SSH sync application
-└── ssh_config_builder.py      # Standalone SSH config builder
+tools/
+├── src/
+│   ├── oci_client/                 # OCI client library
+│   │   ├── client.py              # Main OCI client
+│   │   ├── models.py              # Data models
+│   │   ├── auth.py                # Authentication handling
+│   │   └── utils/                 # Utility modules
+│   │       ├── config.py          # YAML configuration loading
+│   │       ├── display.py         # Rich console output
+│   │       ├── resources.py       # Resource collection
+│   │       ├── session.py         # Session token management
+│   │       └── ssh_config_generator.py  # SSH config generation
+│   ├── ssh_sync.py                # Main SSH sync application
+│   └── ssh_config_builder.py      # Standalone SSH config builder
+├── tests/                         # Unit tests
+├── examples/                      # Usage examples
+└── meta.yaml                     # Configuration file
 ```
 
 ### Key Components
@@ -230,7 +250,7 @@ poetry run pytest tests/test_client.py -v
 
 ```bash
 # Use a custom YAML configuration file
-python src/ssh_sync.py remote-observer dev --config-file custom.yaml
+cd tools && python src/ssh_sync.py remote-observer dev --config-file custom.yaml
 ```
 
 ### Session Token Management
@@ -261,10 +281,10 @@ oci session authenticate --profile-name DEFAULT --region us-phoenix-1
 make ssh-sync PROJECT=remote-observer STAGE=dev
 
 # 3. Review the generated config
-cat ssh_config_remote-observer_dev.txt
+cat ssh_configs/ssh_config_remote-observer_dev.txt
 
 # 4. Add to your SSH config
-cat ssh_config_remote-observer_dev.txt >> ~/.ssh/config
+cat ssh_configs/ssh_config_remote-observer_dev.txt >> ~/.ssh/config
 
 # 5. Connect to an instance
 ssh remote-observer-dev-phx-oc1-1

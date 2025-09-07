@@ -145,7 +145,7 @@ def display_session_token_examples() -> None:
 
 def display_completion() -> None:
     """Display completion message."""
-    console.print("\n[bold green]✅ Multi-region demo completed successfully![/bold green]")
+    console.print("\n[bold green]✅ Multi-region SSH sync completed successfully![/bold green]")
 
 
 def display_error(message: str) -> None:

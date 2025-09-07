@@ -2,7 +2,7 @@
 # SSH Configuration Generator for Oracle Cloud Infrastructure
 # Provides convenient commands for development and SSH config generation
 
-.PHONY: help install test ssh-sync clean format lint type-check dev-setup
+.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod
 
 # Default target
 help:
@@ -36,11 +36,11 @@ help:
 # Installation and setup
 install:
 	@echo "📦 Installing dependencies..."
-	poetry install
+	cd tools && poetry install
 
 dev-setup: install
 	@echo "🛠️  Setting up development environment..."
-	poetry run pre-commit install
+	cd tools && poetry run pre-commit install
 	@echo "✅ Development environment ready!"
 
 # SSH Sync commands
@@ -62,32 +62,32 @@ ssh-sync:
 		echo "  make ssh-sync PROJECT=remote-observer STAGE=prod"; \
 		exit 1; \
 	fi
-	poetry run python src/ssh_sync.py $(PROJECT) $(STAGE)
+	cd tools && poetry run python src/ssh_sync.py $(PROJECT) $(STAGE)
 
 # Alternative ssh-sync targets for convenience
 ssh-sync-remote-observer-dev:
 	@echo "🔧 Generating SSH config for remote-observer dev environment..."
-	poetry run python src/ssh_sync.py remote-observer dev
+	cd tools && poetry run python src/ssh_sync.py remote-observer dev
 
 ssh-sync-remote-observer-staging:
 	@echo "🔧 Generating SSH config for remote-observer staging environment..."
-	poetry run python src/ssh_sync.py remote-observer staging
+	cd tools && poetry run python src/ssh_sync.py remote-observer staging
 
 ssh-sync-remote-observer-prod:
 	@echo "🔧 Generating SSH config for remote-observer prod environment..."
-	poetry run python src/ssh_sync.py remote-observer prod
+	cd tools && poetry run python src/ssh_sync.py remote-observer prod
 
 ssh-sync-today-all-dev:
 	@echo "🔧 Generating SSH config for today-all dev environment..."
-	poetry run python src/ssh_sync.py today-all dev
+	cd tools && poetry run python src/ssh_sync.py today-all dev
 
 ssh-sync-today-all-staging:
 	@echo "🔧 Generating SSH config for today-all staging environment..."
-	poetry run python src/ssh_sync.py today-all staging
+	cd tools && poetry run python src/ssh_sync.py today-all staging
 
 ssh-sync-today-all-prod:
 	@echo "🔧 Generating SSH config for today-all prod environment..."
-	poetry run python src/ssh_sync.py today-all prod
+	cd tools && poetry run python src/ssh_sync.py today-all prod
 
 ssh-help:
 	@echo "🔧 SSH Sync Configuration Help"
@@ -136,29 +136,29 @@ ssh-help:
 # Testing
 test:
 	@echo "🧪 Running tests..."
-	poetry run pytest
+	cd tools && poetry run pytest
 
 test-verbose:
 	@echo "🧪 Running tests with verbose output..."
-	poetry run pytest -v
+	cd tools && poetry run pytest -v
 
 test-coverage:
 	@echo "🧪 Running tests with coverage..."
-	poetry run pytest --cov=src/oci_client --cov-report=term-missing
+	cd tools && poetry run pytest --cov=src/oci_client --cov-report=term-missing
 
 # Code quality
 format:
 	@echo "🎨 Formatting code..."
-	poetry run black src/ tests/
-	poetry run isort src/ tests/
+	cd tools && poetry run black src/ tests/
+	cd tools && poetry run isort src/ tests/
 
 lint:
 	@echo "🔍 Running linting..."
-	poetry run flake8 src/ tests/
+	cd tools && poetry run flake8 src/ tests/
 
 type-check:
 	@echo "🔬 Running type checking..."
-	poetry run mypy src/
+	cd tools && poetry run mypy src/
 
 # Development workflow
 check: format lint type-check test
@@ -186,8 +186,8 @@ setup-example:
 	@echo "export OCI_REGION=us-phoenix-1"
 	@echo "export OCI_PROFILE=DEFAULT"
 	@echo ""
-	@echo "# Then run the demo:"
-	@echo "make demo"
+	@echo "# Then run the SSH sync:"
+	@echo "make ssh-sync PROJECT=remote-observer STAGE=dev"
 
 # Quick start for new users
 quickstart:
@@ -202,7 +202,7 @@ quickstart:
 	@echo "3. Set your compartment ID:"
 	@echo "   export OCI_COMPARTMENT_ID=your-compartment-ocid-here"
 	@echo ""
-	@echo "4. Run the demo:"
-	@echo "   make demo"
+	@echo "4. Run SSH sync:"
+	@echo "   make ssh-sync PROJECT=remote-observer STAGE=dev"
 	@echo ""
-	@echo "For more help: make demo-help"
+	@echo "For more help: make ssh-help"
