@@ -170,7 +170,7 @@ Host odo-remote-observer-dev-phx-oc1-1
 
 ```bash
 # Copy to your SSH config
-cat ssh_configs/ssh_config_remote-observer_dev.txt >> ~/.ssh/config
+cat ssh_configs/remote-observer_dev.txt >> ~/.ssh/config
 
 # Connect to an instance
 ssh remote-observer-dev-phx-oc1-1
@@ -281,10 +281,10 @@ oci session authenticate --profile-name DEFAULT --region us-phoenix-1
 make ssh-sync PROJECT=remote-observer STAGE=dev
 
 # 3. Review the generated config
-cat ssh_configs/ssh_config_remote-observer_dev.txt
+cat ssh_configs/remote-observer_dev.txt
 
 # 4. Add to your SSH config
-cat ssh_configs/ssh_config_remote-observer_dev.txt >> ~/.ssh/config
+cat ssh_configs/remote-observer_dev.txt >> ~/.ssh/config
 
 # 5. Connect to an instance
 ssh remote-observer-dev-phx-oc1-1

@@ -204,7 +204,7 @@ def main():
             display_ssh_config_summary(all_ssh_entries)
 
             # Write SSH config file to ssh_configs directory
-            ssh_config_filename = f"../ssh_configs/ssh_config_{project_name}_{stage}.txt"
+            ssh_config_filename = f"../ssh_configs/{project_name}_{stage}.txt"
             write_ssh_config_file(all_ssh_entries, ssh_config_filename, project_name, stage)
         else:
             console.print("[yellow]No SSH config entries could be generated[/yellow]")
@@ -212,7 +212,7 @@ def main():
     # Display completion message
     console.print("\n[bold green]✅ SSH Configuration Sync Complete![/bold green]")
     if region_data and all_ssh_entries:
-        ssh_config_filename = f"ssh_configs/ssh_config_{project_name}_{stage}.txt"
+        ssh_config_filename = f"ssh_configs/{project_name}_{stage}.txt"
         console.print(f"[green]SSH config saved to: {ssh_config_filename}[/green]")
         console.print(
             "[dim]You can now use these SSH configurations to connect to your OCI instances.[/dim]"
