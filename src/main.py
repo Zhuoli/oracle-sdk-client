@@ -21,6 +21,9 @@ from oci_client.utils.display import (
 )
 from oci_client.utils.session import setup_session_token, create_oci_client, display_connection_info
 from oci_client.utils.resources import collect_all_resources
+from oci_client.utils.ssh_config_generator import (
+    generate_ssh_config_entries, write_ssh_config_file, display_ssh_config_summary
+)
 
 # Setup logging
 logging.basicConfig(
@@ -129,6 +132,7 @@ def main():
     all_oke_instances = []
     all_odo_instances = []
     all_bastions = []
+    region_data = []  # For SSH config generation
     
     for region, compartment_id in region_compartments.items():
         oke_instances, odo_instances, bastions = process_region(
@@ -139,6 +143,16 @@ def main():
         all_oke_instances.extend(oke_instances)
         all_odo_instances.extend(odo_instances)
         all_bastions.extend(bastions)
+        
+        # Store region data for SSH config generation
+        if oke_instances or odo_instances:
+            region_data.append({
+                'region': region,
+                'compartment_id': compartment_id,
+                'oke_instances': oke_instances,
+                'odo_instances': odo_instances,
+                'bastions': bastions
+            })
     
     # Display final summary
     display_summary(
@@ -147,6 +161,39 @@ def main():
         len(all_odo_instances), 
         len(all_bastions)
     )
+    
+    # Generate SSH config if we have instances
+    if region_data:
+        console.print("\n[bold blue]🔧 Generating SSH Config...[/bold blue]")
+        all_ssh_entries = []
+        
+        for data in region_data:
+            # Create a client for this region to generate SSH config
+            profile_name = setup_session_token(project_name, stage, data['region'])
+            client = create_oci_client(data['region'], profile_name)
+            
+            if client:
+                ssh_entries = generate_ssh_config_entries(
+                    client=client,
+                    oke_instances=data['oke_instances'],
+                    odo_instances=data['odo_instances'],
+                    bastions=data['bastions'],
+                    compartment_id=data['compartment_id'],
+                    project_name=project_name,
+                    stage=stage,
+                    region=data['region']
+                )
+                all_ssh_entries.extend(ssh_entries)
+        
+        if all_ssh_entries:
+            # Display SSH config summary
+            display_ssh_config_summary(all_ssh_entries)
+            
+            # Write SSH config file
+            ssh_config_filename = f"ssh_config_{project_name}_{stage}.txt"
+            write_ssh_config_file(all_ssh_entries, ssh_config_filename, project_name, stage)
+        else:
+            console.print("[yellow]No SSH config entries could be generated[/yellow]")
     
     # Show examples
     display_session_token_examples()
