@@ -26,12 +26,10 @@ from oci_client.utils.config import load_region_compartments
 from oci_client.utils.display import (
     display_bastions,
     display_client_initialization,
-    display_completion,
     display_configuration_info,
     display_odo_instances,
     display_oke_instances,
     display_region_header,
-    display_session_token_examples,
     display_summary,
 )
 from oci_client.utils.resources import collect_all_resources
@@ -50,7 +48,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         description="OCI SSH Sync - Generate SSH config for OCI instances",
@@ -76,7 +74,7 @@ Examples:
     return parser.parse_args()
 
 
-def display_ssh_sync_header():
+def display_ssh_sync_header() -> None:
     """Display the SSH sync tool introduction."""
     from rich.console import Console
 
@@ -121,7 +119,7 @@ def process_region(project_name: str, stage: str, region: str, compartment_id: s
     return oke_instances, odo_instances, bastions
 
 
-def main():
+def main() -> int:
     """Main function to generate SSH configuration for OKE and ODO instances with YAML configuration."""
     display_ssh_sync_header()
 

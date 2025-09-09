@@ -1,6 +1,5 @@
 """Tests for authentication module."""
 
-from pathlib import Path
 from unittest.mock import MagicMock, Mock, mock_open, patch
 
 import pytest
@@ -145,7 +144,7 @@ class TestOCIAuthenticator:
         mock_load_key.return_value = mock_private_key
 
         auth = OCIAuthenticator(mock_config)
-        signer = auth._create_session_token_signer()
+        auth._create_session_token_signer()
 
         mock_file.assert_called_once_with("/path/to/token", "r")
         mock_load_key.assert_called_once_with("/path/to/key.pem", pass_phrase=None)
@@ -161,7 +160,7 @@ class TestOCIAuthenticator:
         mock_config.pass_phrase = "test_pass"
 
         auth = OCIAuthenticator(mock_config)
-        signer = auth._create_api_key_signer()
+        auth._create_api_key_signer()
 
         mock_signer.assert_called_once_with(
             tenancy="ocid1.tenancy.oc1..xxxxx",

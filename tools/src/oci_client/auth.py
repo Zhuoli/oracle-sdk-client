@@ -1,7 +1,6 @@
 """Authentication module for OCI client."""
 
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -88,7 +87,7 @@ class OCIAuthenticator:
             self.config.security_token_file = oci_config.get("security_token_file")
             self.config.pass_phrase = oci_config.get("pass_phrase")
 
-            return oci_config
+            return dict(oci_config)
 
         except Exception as e:
             logger.error(f"Failed to load OCI config: {e}")
@@ -145,7 +144,10 @@ class OCIAuthenticator:
     def _create_session_token_signer(self) -> SecurityTokenSigner:
         """Create a session token signer."""
         # Read the session token
-        with open(self.config.security_token_file, "r") as f:
+        token_file = self.config.security_token_file
+        if not token_file:
+            raise ValueError("Security token file path is not set")
+        with open(token_file, "r") as f:
             token = f.read().strip()
 
         # Load the private key

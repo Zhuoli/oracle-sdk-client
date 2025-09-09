@@ -71,7 +71,9 @@ def generate_ssh_config_entries(
 
         for instance in oke_instances:
             # Find matching bastion using intelligent selection
-            bastion = client.find_bastion_for_subnet(bastions, instance.subnet_id, instance.instance_id)
+            bastion = client.find_bastion_for_subnet(
+                bastions, instance.subnet_id, instance.instance_id
+            )
             if not bastion:
                 console.print(
                     f"[yellow]No bastion found for OKE instance {instance.instance_id}[/yellow]"
@@ -109,7 +111,9 @@ def generate_ssh_config_entries(
 
         for i, instance in enumerate(odo_instances, 1):
             # Find matching bastion using intelligent selection
-            bastion = client.find_bastion_for_subnet(bastions, instance.subnet_id, instance.instance_id)
+            bastion = client.find_bastion_for_subnet(
+                bastions, instance.subnet_id, instance.instance_id
+            )
             if not bastion:
                 console.print(
                     f"[yellow]No bastion found for ODO instance {instance.instance_id}[/yellow]"

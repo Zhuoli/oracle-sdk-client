@@ -1,13 +1,10 @@
 """Main OCI client module with optimized functionality."""
 
-import json
 import logging
 import subprocess
-import time
-import webbrowser
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import oci
 import requests
@@ -234,6 +231,8 @@ class OCIClient:
             for region in regions:
                 if region.name.lower() == self.config.region.lower():
                     # Get home region info
+                    if self.oci_config is None:
+                        raise ValueError("OCI config is not initialized")
                     tenancy = self.identity_client.get_tenancy(self.oci_config["tenancy"]).data
 
                     return RegionInfo(
@@ -262,7 +261,8 @@ class OCIClient:
 
             if response.status_code == 200:
                 data = response.json()
-                return data.get("internal_realm_domain")
+                domain = data.get("internal_realm_domain")
+                return str(domain) if domain is not None else None
 
             return None
 
@@ -357,7 +357,7 @@ class OCIClient:
 
         oke_instances = []
         logger.info(f"Checking {len(all_instances)} instances for OKE metadata...")
-        
+
         for instance in all_instances:
             is_oke = False
             detected_cluster_name = None
@@ -376,14 +376,17 @@ class OCIClient:
             # Method 2: Check for newer OKE metadata patterns
             if not is_oke:
                 # Check for cluster ID in metadata
-                cluster_id = instance.metadata.get("oci.oraclecloud.com/oke-cluster-id") or \
-                           instance.metadata.get("oke-cluster-id")
-                
+                cluster_id = instance.metadata.get(
+                    "oci.oraclecloud.com/oke-cluster-id"
+                ) or instance.metadata.get("oke-cluster-id")
+
                 if cluster_id:
                     is_oke = True
-                    detected_cluster_name = instance.metadata.get("oci.oraclecloud.com/oke-cluster-name") or \
-                                          instance.metadata.get("oke-cluster-name") or \
-                                          cluster_id
+                    detected_cluster_name = (
+                        instance.metadata.get("oci.oraclecloud.com/oke-cluster-name")
+                        or instance.metadata.get("oke-cluster-name")
+                        or cluster_id
+                    )
                     detection_method = "cluster-id metadata"
 
             # Method 3: Check for Kubernetes-related metadata
@@ -392,22 +395,31 @@ class OCIClient:
                 k8s_metadata = instance.metadata.get("kubernetes", {})
                 if k8s_metadata or "node-pool" in str(instance.metadata).lower():
                     is_oke = True
-                    detected_cluster_name = k8s_metadata.get("cluster-name") if isinstance(k8s_metadata, dict) else "unknown"
+                    detected_cluster_name = (
+                        k8s_metadata.get("cluster-name")
+                        if isinstance(k8s_metadata, dict)
+                        else "unknown"
+                    )
                     detection_method = "kubernetes metadata"
 
-            # Method 4: Check defined tags for OKE patterns  
-            if not is_oke and hasattr(instance, 'defined_tags'):
+            # Method 4: Check defined tags for OKE patterns
+            if not is_oke and hasattr(instance, "defined_tags"):
                 for tag_namespace, tags in instance.defined_tags.items():
-                    if 'oke' in tag_namespace.lower() or 'kubernetes' in tag_namespace.lower():
+                    if "oke" in tag_namespace.lower() or "kubernetes" in tag_namespace.lower():
                         is_oke = True
-                        detected_cluster_name = tags.get('cluster-name', tags.get('cluster_name', 'unknown'))
+                        detected_cluster_name = tags.get(
+                            "cluster-name", tags.get("cluster_name", "unknown")
+                        )
                         detection_method = f"defined tags ({tag_namespace})"
                         break
 
             # Method 5: Check display name patterns
             if not is_oke and instance.display_name:
                 display_name_lower = instance.display_name.lower()
-                if any(pattern in display_name_lower for pattern in ['oke-', 'k8s-', 'kubernetes', 'node-pool']):
+                if any(
+                    pattern in display_name_lower
+                    for pattern in ["oke-", "k8s-", "kubernetes", "node-pool"]
+                ):
                     is_oke = True
                     detected_cluster_name = "detected-from-name"
                     detection_method = "display name pattern"
@@ -415,31 +427,45 @@ class OCIClient:
             if is_oke:
                 # Filter by cluster name if specified
                 if cluster_name and detected_cluster_name != cluster_name:
-                    logger.debug(f"Skipping OKE instance {instance.instance_id}: cluster mismatch ({detected_cluster_name} != {cluster_name})")
+                    logger.debug(
+                        f"Skipping OKE instance {instance.instance_id}: cluster mismatch ({detected_cluster_name} != {cluster_name})"
+                    )
                     continue
 
                 instance.cluster_name = detected_cluster_name
                 oke_instances.append(instance)
-                logger.info(f"Found OKE instance {instance.instance_id} in cluster '{detected_cluster_name}' via {detection_method}")
+                logger.info(
+                    f"Found OKE instance {instance.instance_id} in cluster '{detected_cluster_name}' via {detection_method}"
+                )
             else:
                 # Debug: Log instances that weren't detected as OKE
-                logger.debug(f"Instance {instance.instance_id} ({instance.display_name}) - not detected as OKE")
+                logger.debug(
+                    f"Instance {instance.instance_id} ({instance.display_name}) - not detected as OKE"
+                )
                 if logger.level <= 10:  # DEBUG level
                     logger.debug(f"  Metadata keys: {list(instance.metadata.keys())}")
-                    if hasattr(instance, 'defined_tags'):
-                        logger.debug(f"  Defined tag namespaces: {list(instance.defined_tags.keys())}")
+                    if hasattr(instance, "defined_tags"):
+                        logger.debug(
+                            f"  Defined tag namespaces: {list(instance.defined_tags.keys())}"
+                        )
 
         if len(oke_instances) == 0 and len(all_instances) > 0:
-            logger.warning("No OKE instances found. Set OCI_LOG_LEVEL=DEBUG to see detailed metadata analysis.")
-            logger.info("You can also check instance metadata manually to identify the correct OKE detection pattern.")
-        
+            logger.warning(
+                "No OKE instances found. Set OCI_LOG_LEVEL=DEBUG to see detailed metadata analysis."
+            )
+            logger.info(
+                "You can also check instance metadata manually to identify the correct OKE detection pattern."
+            )
+
         logger.info(f"Found {len(oke_instances)} OKE instances total")
         return sorted(oke_instances, key=lambda x: x.cluster_name or "")
 
-    def debug_instance_metadata(self, compartment_id: str, instance_id: Optional[str] = None) -> None:
+    def debug_instance_metadata(
+        self, compartment_id: str, instance_id: Optional[str] = None
+    ) -> None:
         """Debug helper: Print detailed metadata for instances to help identify OKE detection patterns."""
         all_instances = self.list_instances(compartment_id, lifecycle_state=LifecycleState.RUNNING)
-        
+
         if instance_id:
             # Show specific instance
             instances_to_show = [inst for inst in all_instances if inst.instance_id == instance_id]
@@ -449,7 +475,7 @@ class OCIClient:
         else:
             # Show first few instances as examples
             instances_to_show = all_instances[:3]
-        
+
         for instance in instances_to_show:
             logger.info(f"\n=== Instance {instance.instance_id} ({instance.display_name}) ===")
             logger.info(f"Metadata keys: {list(instance.metadata.keys())}")
@@ -459,13 +485,13 @@ class OCIClient:
                     logger.info(f"  {key}: {list(value.keys())} (dict)")
                 else:
                     logger.info(f"  {key}: {value}")
-            
-            if hasattr(instance, 'defined_tags'):
+
+            if hasattr(instance, "defined_tags"):
                 logger.info("Defined tags:")
                 for tag_namespace, tags in instance.defined_tags.items():
                     logger.info(f"  {tag_namespace}: {tags}")
-            
-            if hasattr(instance, 'freeform_tags'):
+
+            if hasattr(instance, "freeform_tags"):
                 logger.info(f"Freeform tags: {instance.freeform_tags}")
 
     def list_odo_instances(self, compartment_id: str) -> List[InstanceInfo]:
@@ -524,22 +550,32 @@ class OCIClient:
                         max_session_ttl = getattr(bastion, attr_name)
                         break
 
+                target_subnet_id = getattr(bastion, "target_subnet_id", "")
+                if not target_subnet_id:
+                    continue  # Skip bastions without target subnet
+
+                bastion_type = BastionType.INTERNAL  # default
+                if hasattr(bastion, "bastion_type"):
+                    try:
+                        bastion_type = BastionType(bastion.bastion_type)
+                    except (ValueError, TypeError):
+                        pass  # Keep default
+
+                lifecycle_state = LifecycleState.ACTIVE  # default
+                if hasattr(bastion, "lifecycle_state"):
+                    try:
+                        lifecycle_state = LifecycleState(bastion.lifecycle_state)
+                    except (ValueError, TypeError):
+                        pass  # Keep default
+
                 bastions.append(
                     BastionInfo(
                         bastion_id=bastion.id,
-                        target_subnet_id=getattr(bastion, "target_subnet_id", None),
+                        target_subnet_id=target_subnet_id,
                         bastion_name=getattr(bastion, "name", None),
-                        bastion_type=(
-                            BastionType(bastion.bastion_type)
-                            if hasattr(bastion, "bastion_type")
-                            else None
-                        ),
-                        max_session_ttl=max_session_ttl,
-                        lifecycle_state=(
-                            LifecycleState(bastion.lifecycle_state)
-                            if hasattr(bastion, "lifecycle_state")
-                            else None
-                        ),
+                        bastion_type=bastion_type,
+                        max_session_ttl=max_session_ttl or 10800,
+                        lifecycle_state=lifecycle_state,
                     )
                 )
 
@@ -554,50 +590,50 @@ class OCIClient:
     ) -> Optional[BastionInfo]:
         """
         Find the best bastion that can access the given subnet.
-        
+
         When multiple bastions target the same subnet, uses deterministic selection
         based on instance_id to ensure consistent pairing.
-        
+
         Args:
             bastions: List of available bastions
             subnet_id: Target subnet ID to find bastion for
             instance_id: Optional instance ID for deterministic selection
-            
+
         Returns:
             Best matching bastion or None if no match found
         """
         # Find all bastions that can access the target subnet
         matching_bastions = [
-            bastion for bastion in bastions 
-            if bastion.target_subnet_id == subnet_id
+            bastion for bastion in bastions if bastion.target_subnet_id == subnet_id
         ]
-        
+
         if not matching_bastions:
             return None
-        
+
         if len(matching_bastions) == 1:
             return matching_bastions[0]
-        
+
         # Multiple bastions found - use intelligent selection
         # Sort bastions by name for deterministic ordering
         matching_bastions.sort(key=lambda b: b.bastion_name or b.bastion_id)
-        
+
         if instance_id:
             # Use hash-based selection for consistent instance-to-bastion pairing
             import hashlib
+
             hash_value = int(hashlib.md5(instance_id.encode()).hexdigest(), 16)
             selected_index = hash_value % len(matching_bastions)
             selected_bastion = matching_bastions[selected_index]
-            
+
             # Log the selection for visibility
             if len(matching_bastions) > 1:
                 logger.info(
                     f"Selected bastion {selected_bastion.bastion_name or selected_bastion.bastion_id} "
                     f"for instance {instance_id} (chose {selected_index + 1} of {len(matching_bastions)} available)"
                 )
-            
+
             return selected_bastion
-        
+
         # Fallback: return first bastion (alphabetically)
         return matching_bastions[0]
 
@@ -925,11 +961,11 @@ class OCIClient:
             return self.authenticator.refresh_token()
         return True
 
-    def __enter__(self):
+    def __enter__(self) -> "OCIClient":
         """Context manager entry."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Context manager exit - cleanup resources."""
         # Close any open clients
         pass

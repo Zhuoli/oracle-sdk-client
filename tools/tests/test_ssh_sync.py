@@ -1,16 +1,14 @@
 """Tests for ssh_sync module."""
 
-from unittest.mock import MagicMock, Mock, patch, call
-import argparse
-import pytest
 import sys
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from src.ssh_sync import parse_arguments, process_region, main, display_ssh_sync_header
-from src.oci_client.models import InstanceInfo, BastionInfo
+from src.oci_client.models import BastionInfo, InstanceInfo
+from src.ssh_sync import display_ssh_sync_header, main, parse_arguments, process_region
 
 
 class TestSSHSync:
@@ -19,38 +17,38 @@ class TestSSHSync:
     def test_parse_arguments(self):
         """Test argument parsing."""
         test_args = ["ssh_sync.py", "remote-observer", "dev", "--config-file", "custom.yaml"]
-        
+
         with patch("sys.argv", test_args):
             args = parse_arguments()
-            
+
             assert args.project_name == "remote-observer"
             assert args.stage == "dev"
             assert args.config_file == "custom.yaml"
-    
+
     def test_parse_arguments_default_config(self):
         """Test argument parsing with default config file."""
         test_args = ["ssh_sync.py", "today-all", "staging"]
-        
+
         with patch("sys.argv", test_args):
             args = parse_arguments()
-            
+
             assert args.project_name == "today-all"
             assert args.stage == "staging"
             assert args.config_file == "meta.yaml"
-    
+
     @patch("rich.console.Console")
     def test_display_ssh_sync_header(self, mock_console_class):
         """Test display header function."""
         mock_console = Mock()
         mock_console_class.return_value = mock_console
-        
+
         display_ssh_sync_header()
-        
+
         # Check that console.print was called
         assert mock_console.print.called
         call_args = str(mock_console.print.call_args_list)
         assert "OCI SSH Sync" in call_args
-    
+
     @patch("src.ssh_sync.collect_all_resources")
     @patch("src.ssh_sync.display_connection_info")
     @patch("src.ssh_sync.create_oci_client")
@@ -77,7 +75,7 @@ class TestSSHSync:
         mock_setup_token.return_value = "test_profile"
         mock_client = Mock()
         mock_create_client.return_value = mock_client
-        
+
         # Mock resource collection
         oke_instances = [
             InstanceInfo(
@@ -102,14 +100,14 @@ class TestSSHSync:
                 target_subnet_id="ocid1.subnet.oc1..subnet1",
             )
         ]
-        
+
         mock_collect.return_value = (oke_instances, odo_instances, bastions)
-        
+
         # Execute
         result = process_region(
             "test-project", "dev", "us-ashburn-1", "ocid1.compartment.oc1..xxxxx"
         )
-        
+
         # Verify
         assert result == (oke_instances, odo_instances, bastions)
         mock_setup_token.assert_called_once_with("test-project", "dev", "us-ashburn-1")
@@ -117,7 +115,7 @@ class TestSSHSync:
         mock_collect.assert_called_once_with(
             mock_client, "ocid1.compartment.oc1..xxxxx", "us-ashburn-1"
         )
-    
+
     @patch("src.ssh_sync.collect_all_resources")
     @patch("src.ssh_sync.display_connection_info")
     @patch("src.ssh_sync.create_oci_client")
@@ -142,14 +140,14 @@ class TestSSHSync:
         """Test region processing when client creation fails."""
         mock_setup_token.return_value = "test_profile"
         mock_create_client.return_value = None  # Client creation fails
-        
+
         result = process_region(
             "test-project", "dev", "us-ashburn-1", "ocid1.compartment.oc1..xxxxx"
         )
-        
+
         assert result == ([], [], [])
         mock_collect.assert_not_called()
-    
+
     @patch("src.ssh_sync.sys.exit")
     @patch("rich.console.Console")
     @patch("src.ssh_sync.write_ssh_config_file")
@@ -186,38 +184,38 @@ class TestSSHSync:
         mock_args.stage = "dev"
         mock_args.config_file = "meta.yaml"
         mock_parse_args.return_value = mock_args
-        
+
         # Setup console
         mock_console = Mock()
         mock_console_class.return_value = mock_console
-        
+
         # Setup config loading
         mock_load_config.return_value = {
             "us-ashburn-1": "ocid1.compartment.oc1..comp1",
             "us-phoenix-1": "ocid1.compartment.oc1..comp2",
         }
-        
+
         # Setup region processing
         oke_instances = [Mock()]
         odo_instances = [Mock()]
         bastions = [Mock()]
         mock_process_region.return_value = (oke_instances, odo_instances, bastions)
-        
+
         # Setup SSH config generation
         mock_setup_token.return_value = "test_profile"
         mock_client = Mock()
         mock_create_client.return_value = mock_client
         mock_generate_ssh.return_value = [{"host": "test-host", "config": "test-config"}]
-        
+
         # Execute
         result = main()
-        
+
         # Verify
         assert result == 0  # Main returns 0 on success
         assert mock_process_region.call_count == 2  # Called for each region
         assert mock_generate_ssh.call_count == 2  # Called for each region with instances
         mock_write_ssh.assert_called_once()
-    
+
     @patch("src.ssh_sync.sys.exit")
     @patch("rich.console.Console")
     @patch("src.ssh_sync.process_region")
@@ -244,37 +242,39 @@ class TestSSHSync:
         mock_args.stage = "dev"
         mock_args.config_file = "meta.yaml"
         mock_parse_args.return_value = mock_args
-        
+
         # Setup console
         mock_console = Mock()
         mock_console_class.return_value = mock_console
-        
+
         # Setup config loading
         mock_load_config.return_value = {"us-ashburn-1": "ocid1.compartment.oc1..comp1"}
-        
+
         # Setup region processing - no instances
         mock_process_region.return_value = ([], [], [])
-        
+
         # Execute
         result = main()
-        
+
         # Verify
         assert result == 0  # Main returns 0 on success
         mock_process_region.assert_called_once()
-        mock_console.print.assert_any_call("\n[bold green]✅ SSH Configuration Sync Complete![/bold green]")
-    
+        mock_console.print.assert_any_call(
+            "\n[bold green]✅ SSH Configuration Sync Complete![/bold green]"
+        )
+
     @patch("src.ssh_sync.sys.exit")
-    @patch("rich.console.Console")  
+    @patch("rich.console.Console")
     @patch("src.ssh_sync.main")
     def test_keyboard_interrupt(self, mock_main, mock_console_class, mock_exit):
         """Test handling of keyboard interrupt."""
         # Setup console
         mock_console = Mock()
         mock_console_class.return_value = mock_console
-        
+
         # Simulate KeyboardInterrupt
         mock_main.side_effect = KeyboardInterrupt()
-        
+
         # Import and execute the module's exception handler
         with patch("sys.argv", ["ssh_sync.py", "test-project", "dev"]):
             try:
@@ -282,7 +282,7 @@ class TestSSHSync:
             except KeyboardInterrupt:
                 mock_console.print("\n[yellow]Program interrupted by user.[/yellow]")
                 mock_exit(1)
-        
+
         # Verify
         mock_console.print.assert_called_with("\n[yellow]Program interrupted by user.[/yellow]")
         mock_exit.assert_called_with(1)

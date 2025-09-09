@@ -89,7 +89,7 @@ def get_compartment_id(
             f"'compartment_id' not found for path projects.{project_name}.{stage}.{realm}.{region}"
         )
 
-    return region_config["compartment_id"]
+    return str(region_config["compartment_id"])
 
 
 def get_compartment_id_safe(
@@ -196,7 +196,9 @@ def list_available_configs(yaml_file_path: str) -> Dict[str, Any]:
         with open(yaml_file_path, "r") as file:
             config = yaml.safe_load(file)
 
-        available = {}
+        from typing import List
+
+        available: Dict[str, Dict[str, Dict[str, List[str]]]] = {}
         if "projects" in config:
             for project, stages in config["projects"].items():
                 available[project] = {}
@@ -230,7 +232,7 @@ if __name__ == "__main__":
         print(f"YAML parsing error: {e}")
 
     # Example 2: Get compartment_id with safe version (returns None on error)
-    compartment_id = get_compartment_id_safe(
+    safe_compartment_id: Optional[str] = get_compartment_id_safe(
         yaml_file_path="meta.yaml",
         project_name="today-all",
         stage="prod",
@@ -238,7 +240,7 @@ if __name__ == "__main__":
         region="us-phoenix-1",
         default="DEFAULT_COMPARTMENT_ID",
     )
-    print(f"Safe Compartment ID: {compartment_id}")
+    print(f"Safe Compartment ID: {safe_compartment_id}")
 
     # Example 3: List all available configurations
     available = list_available_configs("meta.yaml")

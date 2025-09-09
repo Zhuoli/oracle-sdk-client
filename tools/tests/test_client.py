@@ -1,7 +1,6 @@
 """Tests for main client module."""
 
-from typing import List
-from unittest.mock import MagicMock, Mock, PropertyMock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -102,7 +101,7 @@ class TestOCIClient:
             _ = mock_client.network_client
             mock_network.assert_called_once()
 
-    @patch('src.oci_client.client.console')
+    @patch("src.oci_client.client.console")
     def test_test_connection_success(self, mock_console, mock_client):
         """Test successful connection test."""
         mock_regions = Mock()
@@ -117,7 +116,7 @@ class TestOCIClient:
         assert result is True
         mock_identity.list_regions.assert_called_once()
 
-    @patch('src.oci_client.client.console')
+    @patch("src.oci_client.client.console")
     def test_test_connection_failure(self, mock_console, mock_client):
         """Test failed connection test."""
         mock_identity = Mock()
@@ -128,7 +127,7 @@ class TestOCIClient:
 
         assert result is False
 
-    @patch('src.oci_client.client.logger')
+    @patch("src.oci_client.client.logger")
     def test_get_region_info(self, mock_logger, mock_client):
         """Test getting region information."""
         mock_region = Mock()
@@ -168,7 +167,7 @@ class TestOCIClient:
 
             assert domain == "internal.oraclecloud.com"
 
-    @patch('src.oci_client.client.logger')
+    @patch("src.oci_client.client.logger")
     def test_list_compartments(self, mock_logger, mock_client):
         """Test listing compartments."""
         mock_comp1 = Mock()
@@ -196,7 +195,7 @@ class TestOCIClient:
         assert compartments[0]["name"] == "Compartment1"
         assert compartments[1]["name"] == "Compartment2"
 
-    @patch('src.oci_client.client.logger')
+    @patch("src.oci_client.client.logger")
     def test_list_instances(self, mock_logger, mock_client):
         """Test listing instances."""
         mock_instance = Mock()
@@ -290,7 +289,7 @@ class TestOCIClient:
             assert len(odo_instances) == 1
             assert odo_instances[0].display_name == "odo-instance"
 
-    @patch('src.oci_client.client.logger')
+    @patch("src.oci_client.client.logger")
     def test_list_bastions(self, mock_logger, mock_client):
         """Test listing bastions."""
         mock_bastion = Mock()

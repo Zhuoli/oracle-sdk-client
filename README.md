@@ -42,8 +42,9 @@ make dev-setup
 oci-python-client/
 ├── tools/                    # All development tools and source code
 │   ├── src/                 # Python source code
+│   │   ├── oci_client/     # Core OCI client library
+│   │   └── ssh_sync.py     # Main SSH sync application
 │   ├── tests/               # Unit tests
-│   ├── examples/            # Usage examples
 │   ├── meta.yaml           # Configuration file
 │   ├── pyproject.toml      # Poetry dependencies
 │   └── poetry.lock         # Locked dependencies
@@ -192,11 +193,13 @@ tools/
 │   │       ├── display.py         # Rich console output
 │   │       ├── resources.py       # Resource collection
 │   │       ├── session.py         # Session token management
-│   │       └── ssh_config_generator.py  # SSH config generation
-│   ├── ssh_sync.py                # Main SSH sync application
-│   └── ssh_config_builder.py      # Standalone SSH config builder
+│   │       ├── ssh_config_generator.py  # SSH config generation
+│   │       └── yamler.py          # YAML parsing utilities
+│   └── ssh_sync.py                # Main SSH sync application
 ├── tests/                         # Unit tests
-├── examples/                      # Usage examples
+│   ├── test_auth.py              # Authentication tests
+│   ├── test_client.py            # OCI client tests
+│   └── test_ssh_sync.py          # SSH sync tests
 └── meta.yaml                     # Configuration file
 ```
 
