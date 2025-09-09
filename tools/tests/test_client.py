@@ -102,29 +102,34 @@ class TestOCIClient:
             _ = mock_client.network_client
             mock_network.assert_called_once()
 
-    def test_test_connection_success(self, mock_client):
+    @patch('src.oci_client.client.console')
+    def test_test_connection_success(self, mock_console, mock_client):
         """Test successful connection test."""
         mock_regions = Mock()
         mock_regions.data = [Mock(), Mock()]
 
-        with patch.object(mock_client, "identity_client") as mock_identity:
-            mock_identity.list_regions.return_value = mock_regions
+        mock_identity = Mock()
+        mock_identity.list_regions.return_value = mock_regions
+        mock_client._identity_client = mock_identity
 
-            result = mock_client.test_connection()
+        result = mock_client.test_connection()
 
-            assert result is True
-            mock_identity.list_regions.assert_called_once()
+        assert result is True
+        mock_identity.list_regions.assert_called_once()
 
-    def test_test_connection_failure(self, mock_client):
+    @patch('src.oci_client.client.console')
+    def test_test_connection_failure(self, mock_console, mock_client):
         """Test failed connection test."""
-        with patch.object(mock_client, "identity_client") as mock_identity:
-            mock_identity.list_regions.side_effect = Exception("Connection failed")
+        mock_identity = Mock()
+        mock_identity.list_regions.side_effect = Exception("Connection failed")
+        mock_client._identity_client = mock_identity
 
-            result = mock_client.test_connection()
+        result = mock_client.test_connection()
 
-            assert result is False
+        assert result is False
 
-    def test_get_region_info(self, mock_client):
+    @patch('src.oci_client.client.logger')
+    def test_get_region_info(self, mock_logger, mock_client):
         """Test getting region information."""
         mock_region = Mock()
         mock_region.name = "us-ashburn-1"
@@ -133,16 +138,20 @@ class TestOCIClient:
         mock_tenancy = Mock()
         mock_tenancy.home_region_key = "us-phoenix-1"
 
-        with patch.object(mock_client, "identity_client") as mock_identity:
-            mock_identity.list_regions.return_value.data = [mock_region]
-            mock_identity.get_tenancy.return_value.data = mock_tenancy
+        mock_client.config.region = "us-ashburn-1"
+        mock_client.oci_config = {"tenancy": "ocid1.tenancy.oc1..xxxxx"}
 
-            region_info = mock_client.get_region_info()
+        mock_identity = Mock()
+        mock_identity.list_regions.return_value.data = [mock_region]
+        mock_identity.get_tenancy.return_value.data = mock_tenancy
+        mock_client._identity_client = mock_identity
 
-            assert isinstance(region_info, RegionInfo)
-            assert region_info.name == "us-ashburn-1"
-            assert region_info.key == "iad"
-            assert region_info.is_home_region is False
+        region_info = mock_client.get_region_info()
+
+        assert isinstance(region_info, RegionInfo)
+        assert region_info.name == "us-ashburn-1"
+        assert region_info.key == "iad"
+        assert region_info.is_home_region is False
 
     @patch("requests.get")
     def test_get_internal_domain(self, mock_requests, mock_client):
@@ -159,7 +168,8 @@ class TestOCIClient:
 
             assert domain == "internal.oraclecloud.com"
 
-    def test_list_compartments(self, mock_client):
+    @patch('src.oci_client.client.logger')
+    def test_list_compartments(self, mock_logger, mock_client):
         """Test listing compartments."""
         mock_comp1 = Mock()
         mock_comp1.id = "ocid1.compartment.oc1..comp1"
@@ -173,19 +183,21 @@ class TestOCIClient:
         mock_comp2.description = "Test compartment 2"
         mock_comp2.lifecycle_state = "ACTIVE"
 
-        with patch.object(mock_client, "identity_client") as mock_identity:
-            mock_identity.get_compartment.return_value.data = mock_comp1
-            mock_identity.list_compartments.return_value.data = [mock_comp2]
+        mock_identity = Mock()
+        mock_identity.get_compartment.return_value.data = mock_comp1
+        mock_identity.list_compartments.return_value.data = [mock_comp2]
+        mock_client._identity_client = mock_identity
 
-            compartments = mock_client.list_compartments(
-                parent_compartment_id="ocid1.compartment.oc1..parent", include_root=True
-            )
+        compartments = mock_client.list_compartments(
+            parent_compartment_id="ocid1.compartment.oc1..parent", include_root=True
+        )
 
-            assert len(compartments) == 2
-            assert compartments[0]["name"] == "Compartment1"
-            assert compartments[1]["name"] == "Compartment2"
+        assert len(compartments) == 2
+        assert compartments[0]["name"] == "Compartment1"
+        assert compartments[1]["name"] == "Compartment2"
 
-    def test_list_instances(self, mock_client):
+    @patch('src.oci_client.client.logger')
+    def test_list_instances(self, mock_logger, mock_client):
         """Test listing instances."""
         mock_instance = Mock()
         mock_instance.id = "ocid1.instance.oc1..xxxxx"
@@ -197,28 +209,30 @@ class TestOCIClient:
         mock_instance.extended_metadata = {}
         mock_instance.freeform_tags = {"env": "test"}
         mock_instance.defined_tags = {}
+        mock_instance.lifecycle_state = "RUNNING"
 
-        with patch.object(mock_client, "compute_client") as mock_compute:
-            mock_compute.list_instances.return_value.data = [mock_instance]
-            mock_compute.list_instances.return_value.has_next_page = False
+        mock_compute = Mock()
+        mock_compute.list_instances.return_value.data = [mock_instance]
+        mock_compute.list_instances.return_value.has_next_page = False
+        mock_client._compute_client = mock_compute
 
-            with patch.object(mock_client, "_parse_instance") as mock_parse:
-                mock_parse.return_value = InstanceInfo(
-                    instance_id="ocid1.instance.oc1..xxxxx",
-                    display_name="test-instance",
-                    private_ip="10.0.0.1",
-                    subnet_id="ocid1.subnet.oc1..xxxxx",
-                    shape="VM.Standard2.1",
-                )
+        with patch.object(mock_client, "_parse_instance") as mock_parse:
+            mock_parse.return_value = InstanceInfo(
+                instance_id="ocid1.instance.oc1..xxxxx",
+                display_name="test-instance",
+                private_ip="10.0.0.1",
+                subnet_id="ocid1.subnet.oc1..xxxxx",
+                shape="VM.Standard2.1",
+            )
 
-                instances = mock_client.list_instances(
-                    compartment_id="ocid1.compartment.oc1..xxxxx",
-                    lifecycle_state=LifecycleState.RUNNING,
-                )
+            instances = mock_client.list_instances(
+                compartment_id="ocid1.compartment.oc1..xxxxx",
+                lifecycle_state=LifecycleState.RUNNING,
+            )
 
-                assert len(instances) == 1
-                assert instances[0].display_name == "test-instance"
-                assert instances[0].private_ip == "10.0.0.1"
+            assert len(instances) == 1
+            assert instances[0].display_name == "test-instance"
+            assert instances[0].private_ip == "10.0.0.1"
 
     def test_list_oke_instances(self, mock_client):
         """Test listing OKE instances."""
@@ -276,7 +290,8 @@ class TestOCIClient:
             assert len(odo_instances) == 1
             assert odo_instances[0].display_name == "odo-instance"
 
-    def test_list_bastions(self, mock_client):
+    @patch('src.oci_client.client.logger')
+    def test_list_bastions(self, mock_logger, mock_client):
         """Test listing bastions."""
         mock_bastion = Mock()
         mock_bastion.id = "ocid1.bastion.oc1..xxxxx"
@@ -286,16 +301,18 @@ class TestOCIClient:
         mock_bastion.max_session_ttl_in_seconds = 10800
         mock_bastion.lifecycle_state = "ACTIVE"
 
-        with patch.object(mock_client, "bastion_client") as mock_bastion_client:
-            mock_bastion_client.list_bastions.return_value.data = [mock_bastion]
+        mock_bastion_client = Mock()
+        mock_bastion_client.list_bastions.return_value.data = [mock_bastion]
+        mock_bastion_client.list_bastions.return_value.has_next_page = False
+        mock_client._bastion_client = mock_bastion_client
 
-            bastions = mock_client.list_bastions(
-                compartment_id="ocid1.compartment.oc1..xxxxx", bastion_type=BastionType.INTERNAL
-            )
+        bastions = mock_client.list_bastions(
+            compartment_id="ocid1.compartment.oc1..xxxxx", bastion_type=BastionType.INTERNAL
+        )
 
-            assert len(bastions) == 1
-            assert bastions[0].bastion_name == "test-bastion"
-            assert bastions[0].bastion_type == BastionType.INTERNAL
+        assert len(bastions) == 1
+        assert bastions[0].bastion_name == "test-bastion"
+        assert bastions[0].bastion_type == BastionType.INTERNAL
 
     def test_find_bastion_for_subnet(self, mock_client):
         """Test finding bastion for subnet."""
