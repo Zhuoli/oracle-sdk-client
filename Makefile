@@ -2,7 +2,9 @@
 # SSH Configuration Generator for Oracle Cloud Infrastructure
 # Provides convenient commands for development and SSH config generation
 
-.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod
+.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod recycle-node-pools
+
+POLL_SECONDS ?= 30
 
 # Default target
 help:
@@ -23,6 +25,9 @@ help:
 	@echo "  lint          Run linting with flake8"
 	@echo "  type-check    Run type checking with mypy"
 	@echo "  clean         Clean up temporary files and caches"
+	@echo ""
+	@echo "Production Operations:"
+	@echo "  recycle-node-pools CSV=<file> [DRY_RUN=1] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)]"
 	@echo ""
 	@echo "SSH Sync Configuration:"
 	@echo "  Uses meta.yaml configuration file for project/stage/region mapping"
@@ -176,6 +181,24 @@ clean:
 	find . -name "*~" -delete 2>/dev/null || true
 	find . -name ".coverage" -delete 2>/dev/null || true
 	@echo "✅ Cleanup completed!"
+
+# OKE node pool recycling
+recycle-node-pools:
+	@if [ -z "$(CSV)" ]; then \
+		echo "❌ Error: CSV=<file> is required"; \
+		echo "Usage: make recycle-node-pools CSV=oke_nodes.csv [DRY_RUN=1] [CONFIG=~/.oci/config]"; \
+		exit 1; \
+	fi
+	@echo "♻️  Recycling OKE node pools from $(CSV)"
+	@DRY_RUN_FLAG=""; \
+	if [ "$(DRY_RUN)" = "1" ] || [ "$(DRY_RUN)" = "true" ] || [ "$(DRY_RUN)" = "TRUE" ] || [ "$(DRY_RUN)" = "yes" ] || [ "$(DRY_RUN)" = "YES" ]; then \
+		DRY_RUN_FLAG="--dry-run"; \
+	fi; \
+	CONFIG_FLAG=""; \
+	if [ -n "$(CONFIG)" ]; then \
+		CONFIG_FLAG="--config-file ../$(CONFIG)"; \
+	fi; \
+	cd tools && poetry run python src/recycle_node_pools.py --csv-path "../$(CSV)" --poll-seconds "$(POLL_SECONDS)" $$CONFIG_FLAG $$DRY_RUN_FLAG
 
 # Example environment setup (for documentation)
 setup-example:
