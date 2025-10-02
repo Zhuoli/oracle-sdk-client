@@ -144,6 +144,7 @@ class NodePoolRecycler:
     # Public execution entrypoint
     # ------------------------------------------------------------------
     def run(self) -> int:
+        """Main entry point for the recycler workflow."""
         instructions = self._load_instructions()
         if not instructions:
             self.logger.error("No actionable rows found in %s", self.csv_path)
@@ -171,12 +172,15 @@ class NodePoolRecycler:
     # Configuration & logging
     # ------------------------------------------------------------------
     def _default_meta_path(self) -> Path:
+        """Return the default path to meta.yaml (shared with ssh_sync)."""
         return Path(__file__).resolve().parents[1] / "meta.yaml"
 
     def _context_key(self, context: CompartmentContext) -> Tuple[str, str, str]:
+        """Build a unique cache key for the given project/stage/region context."""
         return (context.project, context.stage, context.region)
 
     def _load_compartment_lookup(self) -> Dict[str, CompartmentContext]:
+        """Parse meta.yaml and map compartment OCIDs to project/stage/region tuples."""
         lookup: Dict[str, CompartmentContext] = {}
         if not self.meta_file.exists():
             self.logger.error("Meta file not found: %s", self.meta_file)
@@ -219,6 +223,7 @@ class NodePoolRecycler:
         return lookup
 
     def _configure_logging(self) -> None:
+        """Initialize stream & file logging for this run."""
         self.log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         log_path = self.log_dir / f"node_pool_recycle_{timestamp}.log"
@@ -248,6 +253,7 @@ class NodePoolRecycler:
     # Client management
     # ------------------------------------------------------------------
     def _get_client(self, context: CompartmentContext) -> Optional[OCIClient]:
+        """Create or reuse an authenticated OCIClient for a specific project/stage/region."""
         key = self._context_key(context)
         if key in self._session_clients:
             return self._session_clients[key]
@@ -277,6 +283,7 @@ class NodePoolRecycler:
         return client
 
     def _get_ce_client(self, context: CompartmentContext) -> Optional[ContainerEngineClient]:
+        """Create or reuse an OCI Container Engine client for the supplied context."""
         key = self._context_key(context)
         if key in self._ce_clients:
             return self._ce_clients[key]
@@ -297,6 +304,7 @@ class NodePoolRecycler:
     # CSV ingestion and plan building
     # ------------------------------------------------------------------
     def _load_instructions(self) -> List[CsvInstruction]:
+        """Read the CSV and normalize required columns into CsvInstruction objects."""
         if not self.csv_path.exists():
             self._errors.append(f"CSV file not found: {self.csv_path}")
             return []
@@ -355,21 +363,39 @@ class NodePoolRecycler:
         return " ".join(value.strip().lower().split())
 
     def _build_column_map(self, headers: Sequence[str]) -> Dict[str, str]:
+        """Map the exact expected headers from the CSV to canonical column keys."""
+
         normalized = {self._normalize_header(name): name for name in headers}
+        expected = {
+            "host name": "compute instance host name",
+            "compartment id": "compartment id",
+            "current image": "current image",
+            "newer available image": "new image name",
+        }
+
         mapping: Dict[str, str] = {}
-        for key in [
+        for header_key, canonical in expected.items():
+            original = normalized.get(header_key)
+            if original:
+                mapping[canonical] = original
+
+        missing = {
             "compute instance host name",
             "compartment id",
             "current image",
             "new image name",
-        ]:
-            for header_key, original in normalized.items():
-                if header_key == key:
-                    mapping[key] = original
-                    break
+        } - set(mapping)
+
+        if missing:
+            self.logger.error(
+                "CSV header missing required columns: %s",
+                ", ".join(sorted(missing)),
+            )
+
         return mapping
 
     def _build_plans(self, instructions: Iterable[CsvInstruction]) -> List[NodePoolAction]:
+        """Group CSV instructions by node pool after resolving their compartment context."""
         plans: Dict[Tuple[str, str, str, str], NodePoolAction] = {}
         for instruction in instructions:
             context = self._compartment_lookup.get(instruction.compartment_id)
@@ -469,6 +495,7 @@ class NodePoolRecycler:
     def _find_instance(
         self, host_name: str, compartment_id: str, context: CompartmentContext
     ) -> Optional[oci.core.models.Instance]:
+        """Locate a single active compute instance for the given host within the context."""
         host_key = host_name.lower()
         base_host_key = host_key.split(".")[0]
 
@@ -501,6 +528,7 @@ class NodePoolRecycler:
     def _instances_for_compartment(
         self, context: CompartmentContext, compartment_id: str
     ) -> Sequence[oci.core.models.Instance]:
+        """List compute instances for a compartment, cached per context."""
         cache_key = (*self._context_key(context), compartment_id)
         if cache_key not in self._instance_cache:
             client = self._get_client(context)
@@ -570,6 +598,7 @@ class NodePoolRecycler:
     def _resolve_image_name(
         self, context: CompartmentContext, instance: oci.core.models.Instance
     ) -> Optional[str]:
+        """Resolve the display name of the image backing the instance."""
         image_id = getattr(instance, "image_id", None)
         if not image_id and getattr(instance, "source_details", None):
             image_id = getattr(instance.source_details, "image_id", None)
@@ -606,6 +635,7 @@ class NodePoolRecycler:
     def _get_node_pool(
         self, context: CompartmentContext, node_pool_id: str
     ) -> Optional[oci.container_engine.models.NodePool]:
+        """Fetch a node pool in the specified context, caching the response."""
         cache_key = (*self._context_key(context), node_pool_id)
         if cache_key not in self._node_pool_cache:
             ce_client = self._get_ce_client(context)
@@ -635,6 +665,7 @@ class NodePoolRecycler:
     def _capture_node_pool_health(
         self, context: CompartmentContext, node_pool_id: str
     ) -> Tuple[Optional[str], Optional[str], List[Tuple[str, str]]]:
+        """Return lifecycle state, image, and per-node states for the pool."""
         ce_client = self._get_ce_client(context)
         if not ce_client:
             message = f"No Container Engine client available for region {context.region}"
@@ -667,6 +698,7 @@ class NodePoolRecycler:
     # Execution helpers
     # ------------------------------------------------------------------
     def _execute(self, plans: Iterable[NodePoolAction]) -> None:
+        """Execute the planned image upgrades and node recycling operations."""
         for action in plans:
             # Refresh before acting so we log the pre-change state alongside every work request.
             node_pool = self._get_node_pool(action.context, action.node_pool_id)
@@ -733,6 +765,7 @@ class NodePoolRecycler:
     def _update_node_pool_image(
         self, context: CompartmentContext, node_pool_id: str, new_image_name: str
     ) -> WorkRequestResult:
+        """Update the node pool to the new image and wait for the work request."""
         self.logger.info(
             "Updating node pool %s with new node image '%s'",
             node_pool_id,
@@ -783,6 +816,7 @@ class NodePoolRecycler:
     def _recycle_node(
         self, context: CompartmentContext, node_pool_id: str, plan: NodeRecyclePlan
     ) -> WorkRequestResult:
+        """Delete a specific node from the pool so OKE can recreate it with the new image."""
         self.logger.info(
             "Recycling node %s (%s) from pool %s",
             plan.host_name,
@@ -852,6 +886,7 @@ class NodePoolRecycler:
     def _wait_for_work_request(
         self, context: CompartmentContext, work_request_id: str, description: str
     ) -> WorkRequestResult:
+        """Poll the Container Engine work request until it completes."""
         self.logger.info("Waiting on work request %s for %s", work_request_id, description)
         ce_client = self._get_ce_client(context)
         if not ce_client:
@@ -942,6 +977,7 @@ class NodePoolRecycler:
     def _collect_work_request_errors(
         self, context: CompartmentContext, work_request_id: str
     ) -> List[str]:
+        """Collect any error messages attached to a work request."""
         errors: List[str] = []
         ce_client = self._get_ce_client(context)
         if not ce_client:
@@ -972,6 +1008,7 @@ class NodePoolRecycler:
         return errors
 
     def _generate_report(self) -> None:
+        """Emit a Markdown report summarizing the recycle operation."""
         if not self._report_path:
             return
 
