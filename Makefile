@@ -4,8 +4,6 @@
 
 .PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod recycle-node-pools
 
-POLL_SECONDS ?= 30
-
 # Default target
 help:
 	@echo "🔧 OCI SSH Sync - Available Commands"
@@ -27,7 +25,7 @@ help:
 	@echo "  clean         Clean up temporary files and caches"
 	@echo ""
 	@echo "Production Operations:"
-	@echo "  recycle-node-pools CSV=<file> [DRY_RUN=1]"
+	@echo "  recycle-node-pools CSV=<file> [DRY_RUN=1] [META=tools/meta.yaml] [CONFIG=~/.oci/config]"
 	@echo ""
 	@echo "SSH Sync Configuration:"
 	@echo "  Uses meta.yaml configuration file for project/stage/region mapping"
@@ -186,7 +184,7 @@ clean:
 recycle-node-pools:
 	@if [ -z "$(CSV)" ]; then \
 		echo "❌ Error: CSV=<file> is required"; \
-			echo "Usage: make recycle-node-pools CSV=oke_nodes.csv [DRY_RUN=1]"; \
+			echo "Usage: make recycle-node-pools CSV=oke_nodes.csv [DRY_RUN=1] [META=tools/meta.yaml] [CONFIG=~/.oci/config]"; \
 		exit 1; \
 	fi
 	@echo "♻️  Recycling OKE node pools from $(CSV)"
@@ -202,7 +200,11 @@ recycle-node-pools:
 	if [ -n "$(POLL_SECONDS)" ]; then \
 		POLL_FLAG="--poll-seconds $(POLL_SECONDS)"; \
 	fi; \
-	cd tools && poetry run python src/recycle_node_pools.py --csv-path "../$(CSV)" $$POLL_FLAG $$CONFIG_FLAG $$DRY_RUN_FLAG
+	META_FLAG=""; \
+	if [ -n "$(META)" ]; then \
+		META_FLAG="--meta-file ../$(META)"; \
+	fi; \
+	cd tools && poetry run python src/recycle_node_pools.py --csv-path "../$(CSV)" $$POLL_FLAG $$CONFIG_FLAG $$META_FLAG $$DRY_RUN_FLAG
 
 # Example environment setup (for documentation)
 setup-example:

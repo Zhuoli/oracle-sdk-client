@@ -1,8 +1,9 @@
 """OCI OKE node pool recycling utility.
 
 Reads a CSV file describing compute hosts slated for operating system patching,
-identifies their backing node pools, and performs an automated recycle with
-logging suitable for production change records.
+identifies their backing node pools using the same meta.yaml mapping as
+``ssh_sync``, and performs an automated recycle with logging suitable for
+production change records.
 """
 
 from __future__ import annotations
@@ -10,19 +11,19 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
-import os
 import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import oci
 from oci import exceptions as oci_exceptions
 from oci.container_engine import ContainerEngineClient
 from oci.container_engine.models import UpdateNodePoolDetails
 from oci.pagination import list_call_get_all_results
+import yaml
 
 from oci_client.client import OCIClient
 from oci_client.utils.session import create_oci_client, setup_session_token
@@ -56,16 +57,15 @@ class NodeRecyclePlan:
     current_image: str
     resolved_image_name: Optional[str]
     new_image_name: str
-    region: str
+    context: "CompartmentContext"
 
 
 @dataclass
 class NodePoolAction:
-    # Represents all nodes in a single pool that must share the same target image.
     node_pool_id: str
     new_image_name: str
     nodes: List[NodeRecyclePlan]
-    region: str
+    context: "CompartmentContext"
 
 
 @dataclass
@@ -83,16 +83,19 @@ class WorkRequestResult:
 class NodePoolSummary:
     node_pool_id: str
     target_image: str
+    context: "CompartmentContext"
     update_result: Optional[WorkRequestResult] = None
     node_results: List[WorkRequestResult] = field(default_factory=list)
     post_state: Optional[str] = None
     post_image_name: Optional[str] = None
     post_node_states: List[Tuple[str, str]] = field(default_factory=list)
-    region: str = ""
 
 
-SESSION_PROJECT = "node_recycler"
-SESSION_STAGE = "prod"
+@dataclass(frozen=True)
+class CompartmentContext:
+    project: str
+    stage: str
+    region: str
 
 
 class NodePoolRecycler:
@@ -103,23 +106,26 @@ class NodePoolRecycler:
         dry_run: bool,
         poll_seconds: int = DEFAULT_POLL_SECONDS,
         log_dir: Optional[Path] = None,
+        meta_file: Optional[Path] = None,
     ) -> None:
         self.csv_path = csv_path
         self.config_file = config_file
         self.dry_run = dry_run
         self.poll_seconds = poll_seconds
-        self.base_profile = os.environ.get("OCI_PROFILE", "DEFAULT")
-
         self.logger = logging.getLogger(LOGGER_NAME)
         self.logger.setLevel(logging.INFO)
 
         self.log_dir = log_dir if log_dir else determine_default_log_dir()
 
+        self.meta_file = meta_file if meta_file else self._default_meta_path()
+
         # Region-scoped caches keep remote lookups to a minimum while iterating across many hosts.
-        self._instance_cache: Dict[Tuple[str, str], Sequence[oci.core.models.Instance]] = {}
+        self._instance_cache: Dict[
+            Tuple[str, str, str, str], Sequence[oci.core.models.Instance]
+        ] = {}
         self._image_cache: Dict[str, Optional[str]] = {}
         self._node_pool_cache: Dict[
-            Tuple[str, str], Optional[oci.container_engine.models.NodePool]
+            Tuple[str, str, str, str], Optional[oci.container_engine.models.NodePool]
         ] = {}
         self._errors: List[str] = []
         self._summaries: List[NodePoolSummary] = []
@@ -127,13 +133,12 @@ class NodePoolRecycler:
         self._log_path: Optional[Path] = None
         self._report_path: Optional[Path] = None
         # Reuse ssh_sync session helpers so production auth flows remain consistent.
-        self._region_clients: Dict[str, "OCIClient"] = {}
-        self._region_profiles: Dict[str, str] = {}
-        self._ce_clients: Dict[str, ContainerEngineClient] = {}
+        self._session_clients: Dict[Tuple[str, str, str], "OCIClient"] = {}
+        self._ce_clients: Dict[Tuple[str, str, str], ContainerEngineClient] = {}
+        self._used_contexts: Set[Tuple[str, str, str]] = set()
 
         self._configure_logging()
-        self.base_config = self._load_config()
-        self.regions = self._discover_regions()
+        self._compartment_lookup: Dict[str, CompartmentContext] = self._load_compartment_lookup()
 
     # ------------------------------------------------------------------
     # Public execution entrypoint
@@ -165,6 +170,54 @@ class NodePoolRecycler:
     # ------------------------------------------------------------------
     # Configuration & logging
     # ------------------------------------------------------------------
+    def _default_meta_path(self) -> Path:
+        return Path(__file__).resolve().parents[1] / "meta.yaml"
+
+    def _context_key(self, context: CompartmentContext) -> Tuple[str, str, str]:
+        return (context.project, context.stage, context.region)
+
+    def _load_compartment_lookup(self) -> Dict[str, CompartmentContext]:
+        lookup: Dict[str, CompartmentContext] = {}
+        if not self.meta_file.exists():
+            self.logger.error("Meta file not found: %s", self.meta_file)
+            return lookup
+
+        try:
+            with self.meta_file.open("r", encoding="utf-8") as handle:
+                data = yaml.safe_load(handle) or {}
+        except Exception as exc:
+            self.logger.error("Failed to parse meta file %s: %s", self.meta_file, exc)
+            return lookup
+
+        projects = data.get("projects", {}) if isinstance(data, dict) else {}
+        for project_name, stages in projects.items():
+            if not isinstance(stages, dict):
+                continue
+            for stage_name, realms in stages.items():
+                if not isinstance(realms, dict):
+                    continue
+                for regions in realms.values():
+                    if not isinstance(regions, dict):
+                        continue
+                    for region_name, details in regions.items():
+                        if not isinstance(details, dict):
+                            continue
+                        compartment_id = details.get("compartment_id")
+                        if not compartment_id:
+                            continue
+                        lookup[compartment_id] = CompartmentContext(
+                            project=project_name,
+                            stage=stage_name,
+                            region=region_name,
+                        )
+
+        self.logger.info(
+            "Loaded %d compartment mapping(s) from %s",
+            len(lookup),
+            self.meta_file,
+        )
+        return lookup
+
     def _configure_logging(self) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -191,84 +244,44 @@ class NodePoolRecycler:
 
         self.logger.info("Logging initialized. Log file: %s", log_path)
 
-    def _load_config(self) -> Dict[str, str]:
-        config_kwargs = {"profile_name": self.base_profile}
-        if self.config_file:
-            config_kwargs["file_location"] = str(self.config_file)
-
-        config = oci.config.from_file(**config_kwargs)
-
-        oci.config.validate_config(config)
-        self.logger.info(
-            "Loaded OCI config for profile '%s' targeting region '%s'",
-            self.base_profile,
-            config.get("region"),
-        )
-        return config
-
-    def _discover_regions(self) -> List[str]:
-        region_list: List[str] = []
-        try:
-            identity_client = oci.identity.IdentityClient(self.base_config)
-            tenancy_id = self.base_config.get("tenancy")
-            if tenancy_id:
-                response = identity_client.list_region_subscriptions(tenancy_id)
-                region_list = sorted({sub.region_name for sub in response.data})
-        except Exception as exc:
-            self.logger.warning(
-                "Unable to list region subscriptions with profile '%s': %s",
-                self.base_profile,
-                exc,
-            )
-
-        if not region_list:
-            # Fall back to the configured home region when the subscription call is unavailable.
-            fallback_region = self.base_config.get("region")
-            if fallback_region:
-                region_list = [fallback_region]
-                self.logger.warning("Falling back to configured region '%s' only", fallback_region)
-            else:
-                self.logger.error("Could not determine any regions to process")
-        else:
-            self.logger.info(
-                "Discovered %d subscribed region(s): %s",
-                len(region_list),
-                ", ".join(region_list),
-            )
-
-        return region_list
-
     # ------------------------------------------------------------------
     # Client management
     # ------------------------------------------------------------------
-    def _get_client(self, region: str) -> Optional[OCIClient]:
-        if region in self._region_clients:
-            return self._region_clients[region]
+    def _get_client(self, context: CompartmentContext) -> Optional[OCIClient]:
+        key = self._context_key(context)
+        if key in self._session_clients:
+            return self._session_clients[key]
 
         # Leverage ssh_sync's session-token workflow so operators authenticate the same way here.
-        profile_name = setup_session_token(SESSION_PROJECT, SESSION_STAGE, region)
-        self._region_profiles[region] = profile_name
+        profile_name = setup_session_token(context.project, context.stage, context.region)
 
-        client = create_oci_client(region, profile_name)
+        client = create_oci_client(context.region, profile_name)
         if not client:
-            message = f"Failed to initialize OCI client for region {region}"
+            message = "Failed to initialize OCI client for region {region} (project={project}, stage={stage})".format(
+                region=context.region,
+                project=context.project,
+                stage=context.stage,
+            )
             self.logger.error(message)
             self._errors.append(message)
             return None
 
-        self._region_clients[region] = client
+        self._session_clients[key] = client
         self.logger.info(
-            "Initialized OCI client for region %s using profile '%s'",
-            region,
+            "Initialized OCI client for %s/%s in %s using profile '%s'",
+            context.project,
+            context.stage,
+            context.region,
             profile_name,
         )
         return client
 
-    def _get_ce_client(self, region: str) -> Optional[ContainerEngineClient]:
-        if region in self._ce_clients:
-            return self._ce_clients[region]
+    def _get_ce_client(self, context: CompartmentContext) -> Optional[ContainerEngineClient]:
+        key = self._context_key(context)
+        if key in self._ce_clients:
+            return self._ce_clients[key]
 
-        client = self._get_client(region)
+        client = self._get_client(context)
         if not client:
             return None
 
@@ -277,7 +290,7 @@ class NodePoolRecycler:
             signer=client.signer,
             retry_strategy=client.retry_strategy,
         )
-        self._ce_clients[region] = ce_client
+        self._ce_clients[key] = ce_client
         return ce_client
 
     # ------------------------------------------------------------------
@@ -357,16 +370,25 @@ class NodePoolRecycler:
         return mapping
 
     def _build_plans(self, instructions: Iterable[CsvInstruction]) -> List[NodePoolAction]:
-        plans: Dict[Tuple[str, str], NodePoolAction] = {}
+        plans: Dict[Tuple[str, str, str, str], NodePoolAction] = {}
         for instruction in instructions:
-            match = self._find_instance(instruction.host_name, instruction.compartment_id)
-            if not match:
+            context = self._compartment_lookup.get(instruction.compartment_id)
+            if not context:
+                self._errors.append(
+                    "Compartment {compartment} not found in meta configuration".format(
+                        compartment=instruction.compartment_id
+                    )
+                )
+                continue
+
+            instance = self._find_instance(
+                instruction.host_name, instruction.compartment_id, context
+            )
+            if not instance:
                 self._errors.append(
                     f"Could not locate compute instance for host '{instruction.host_name}'"
                 )
                 continue
-
-            region, instance = match
 
             node_pool_id = self._extract_node_pool_id(instance)
             if not node_pool_id:
@@ -375,7 +397,7 @@ class NodePoolRecycler:
                 )
                 continue
 
-            resolved_image = self._resolve_image_name(region, instance)
+            resolved_image = self._resolve_image_name(context, instance)
             if (
                 instruction.current_image
                 and resolved_image
@@ -397,19 +419,27 @@ class NodePoolRecycler:
                 current_image=instruction.current_image,
                 resolved_image_name=resolved_image,
                 new_image_name=instruction.new_image_name,
-                region=region,
+                context=context,
             )
 
-            key = (region, node_pool_id)
+            key = (*self._context_key(context), node_pool_id)
             if key not in plans:
                 plans[key] = NodePoolAction(
                     node_pool_id=node_pool_id,
                     new_image_name=instruction.new_image_name,
                     nodes=[plan_entry],
-                    region=region,
+                    context=context,
                 )
+                self._used_contexts.add(self._context_key(context))
             else:
                 action = plans[key]
+                if action.context != context:
+                    self._errors.append(
+                        "Conflicting compartment context detected for node pool {node_pool}".format(
+                            node_pool=node_pool_id
+                        )
+                    )
+                    continue
                 if (
                     action.new_image_name.strip().lower()
                     != instruction.new_image_name.strip().lower()
@@ -437,24 +467,20 @@ class NodePoolRecycler:
     # Instance/node pool resolution helpers
     # ------------------------------------------------------------------
     def _find_instance(
-        self, host_name: str, compartment_id: str
-    ) -> Optional[Tuple[str, oci.core.models.Instance]]:
+        self, host_name: str, compartment_id: str, context: CompartmentContext
+    ) -> Optional[oci.core.models.Instance]:
         host_key = host_name.lower()
         base_host_key = host_key.split(".")[0]
 
-        matches: List[Tuple[str, oci.core.models.Instance]] = []
-        for region in self.regions:
-            instances = self._instances_for_compartment(region, compartment_id)
-            if not instances:
+        matches: List[oci.core.models.Instance] = []
+        instances = self._instances_for_compartment(context, compartment_id)
+        for instance in instances:
+            if instance.lifecycle_state not in ACTIVE_INSTANCE_STATES:
                 continue
 
-            for instance in instances:
-                if instance.lifecycle_state not in ACTIVE_INSTANCE_STATES:
-                    continue
-
-                instance_names = self._candidate_names(instance)
-                if host_key in instance_names or base_host_key in instance_names:
-                    matches.append((region, instance))
+            instance_names = self._candidate_names(instance)
+            if host_key in instance_names or base_host_key in instance_names:
+                matches.append(instance)
 
         if not matches:
             self.logger.error(
@@ -464,22 +490,20 @@ class NodePoolRecycler:
             )
             return None
         if len(matches) > 1:
-            regions = ", ".join(sorted({match[0] for match in matches}))
             self.logger.error(
-                "Multiple compute instances matched host '%s' in compartment %s across region(s): %s",
+                "Multiple compute instances matched host '%s' in compartment %s",
                 host_name,
                 compartment_id,
-                regions,
             )
             return None
         return matches[0]
 
     def _instances_for_compartment(
-        self, region: str, compartment_id: str
+        self, context: CompartmentContext, compartment_id: str
     ) -> Sequence[oci.core.models.Instance]:
-        cache_key = (region, compartment_id)
+        cache_key = (*self._context_key(context), compartment_id)
         if cache_key not in self._instance_cache:
-            client = self._get_client(region)
+            client = self._get_client(context)
             if not client:
                 self._instance_cache[cache_key] = []
                 return self._instance_cache[cache_key]
@@ -494,7 +518,7 @@ class NodePoolRecycler:
                 "Fetched %d instance(s) for compartment %s in %s",
                 len(response.data),
                 compartment_id,
-                region,
+                context.region,
             )
         return self._instance_cache[cache_key]
 
@@ -543,7 +567,9 @@ class NodePoolRecycler:
 
         return None
 
-    def _resolve_image_name(self, region: str, instance: oci.core.models.Instance) -> Optional[str]:
+    def _resolve_image_name(
+        self, context: CompartmentContext, instance: oci.core.models.Instance
+    ) -> Optional[str]:
         image_id = getattr(instance, "image_id", None)
         if not image_id and getattr(instance, "source_details", None):
             image_id = getattr(instance.source_details, "image_id", None)
@@ -555,9 +581,11 @@ class NodePoolRecycler:
             return self._image_cache[image_id]
 
         try:
-            client = self._get_client(region)
+            client = self._get_client(context)
             if not client:
-                raise RuntimeError(f"No compute client available for region {region}")
+                raise RuntimeError(
+                    "No compute client available for region {region}".format(region=context.region)
+                )
             response = client.compute_client.get_image(image_id)
         except oci_exceptions.ServiceError as exc:
             self.logger.warning(
@@ -576,13 +604,15 @@ class NodePoolRecycler:
         return name
 
     def _get_node_pool(
-        self, region: str, node_pool_id: str
+        self, context: CompartmentContext, node_pool_id: str
     ) -> Optional[oci.container_engine.models.NodePool]:
-        cache_key = (region, node_pool_id)
+        cache_key = (*self._context_key(context), node_pool_id)
         if cache_key not in self._node_pool_cache:
-            ce_client = self._get_ce_client(region)
+            ce_client = self._get_ce_client(context)
             if not ce_client:
-                self._errors.append(f"No Container Engine client available for region {region}")
+                self._errors.append(
+                    f"No Container Engine client available for region {context.region}"
+                )
                 self._node_pool_cache[cache_key] = None
                 return None
             try:
@@ -591,11 +621,11 @@ class NodePoolRecycler:
                 self.logger.error(
                     "Failed to fetch node pool %s in %s: %s",
                     node_pool_id,
-                    region,
+                    context.region,
                     exc.message,
                 )
                 self._errors.append(
-                    f"Failed to fetch node pool {node_pool_id} in {region}: {exc.message}"
+                    f"Failed to fetch node pool {node_pool_id} in {context.region}: {exc.message}"
                 )
                 self._node_pool_cache[cache_key] = None
                 return None
@@ -603,11 +633,11 @@ class NodePoolRecycler:
         return self._node_pool_cache[cache_key]
 
     def _capture_node_pool_health(
-        self, region: str, node_pool_id: str
+        self, context: CompartmentContext, node_pool_id: str
     ) -> Tuple[Optional[str], Optional[str], List[Tuple[str, str]]]:
-        ce_client = self._get_ce_client(region)
+        ce_client = self._get_ce_client(context)
         if not ce_client:
-            message = f"No Container Engine client available for region {region}"
+            message = f"No Container Engine client available for region {context.region}"
             self.logger.error(message)
             self._errors.append(message)
             return None, None, []
@@ -615,9 +645,7 @@ class NodePoolRecycler:
         try:
             response = ce_client.get_node_pool(node_pool_id)
         except oci_exceptions.ServiceError as exc:
-            message = (
-                f"Failed to refresh node pool {node_pool_id} health in {region}: {exc.message}"
-            )
+            message = f"Failed to refresh node pool {node_pool_id} health in {context.region}: {exc.message}"
             self.logger.error(message)
             self._errors.append(message)
             return None, None, []
@@ -641,7 +669,7 @@ class NodePoolRecycler:
     def _execute(self, plans: Iterable[NodePoolAction]) -> None:
         for action in plans:
             # Refresh before acting so we log the pre-change state alongside every work request.
-            node_pool = self._get_node_pool(action.region, action.node_pool_id)
+            node_pool = self._get_node_pool(action.context, action.node_pool_id)
             if not node_pool:
                 continue
 
@@ -656,7 +684,7 @@ class NodePoolRecycler:
             summary = NodePoolSummary(
                 node_pool_id=action.node_pool_id,
                 target_image=action.new_image_name,
-                region=action.region,
+                context=action.context,
             )
 
             if self.dry_run:
@@ -672,7 +700,7 @@ class NodePoolRecycler:
                 )
             else:
                 summary.update_result = self._update_node_pool_image(
-                    action.region, action.node_pool_id, action.new_image_name
+                    action.context, action.node_pool_id, action.new_image_name
                 )
 
             for node in action.nodes:
@@ -690,11 +718,11 @@ class NodePoolRecycler:
                         )
                     )
                     continue
-                recycle_result = self._recycle_node(action.region, action.node_pool_id, node)
+                recycle_result = self._recycle_node(action.context, action.node_pool_id, node)
                 summary.node_results.append(recycle_result)
 
             post_state, post_image, post_nodes = self._capture_node_pool_health(
-                action.region, action.node_pool_id
+                action.context, action.node_pool_id
             )
             # Capture the observed state after recycle so the report reflects real OCI health.
             summary.post_state = post_state
@@ -703,7 +731,7 @@ class NodePoolRecycler:
             self._summaries.append(summary)
 
     def _update_node_pool_image(
-        self, region: str, node_pool_id: str, new_image_name: str
+        self, context: CompartmentContext, node_pool_id: str, new_image_name: str
     ) -> WorkRequestResult:
         self.logger.info(
             "Updating node pool %s with new node image '%s'",
@@ -711,9 +739,9 @@ class NodePoolRecycler:
             new_image_name,
         )
         details = UpdateNodePoolDetails(node_image_name=new_image_name)
-        ce_client = self._get_ce_client(region)
+        ce_client = self._get_ce_client(context)
         if not ce_client:
-            message = f"No Container Engine client available for region {region}"
+            message = f"No Container Engine client available for region {context.region}"
             self.logger.error(message)
             self._errors.append(message)
             return WorkRequestResult(
@@ -735,7 +763,7 @@ class NodePoolRecycler:
         work_request_id = response.headers.get("opc-work-request-id")
         if work_request_id:
             result = self._wait_for_work_request(
-                region, work_request_id, f"Update node pool {node_pool_id}"
+                context, work_request_id, f"Update node pool {node_pool_id}"
             )
             if result.status != "SUCCEEDED":
                 self._errors.append(
@@ -753,7 +781,7 @@ class NodePoolRecycler:
         )
 
     def _recycle_node(
-        self, region: str, node_pool_id: str, plan: NodeRecyclePlan
+        self, context: CompartmentContext, node_pool_id: str, plan: NodeRecyclePlan
     ) -> WorkRequestResult:
         self.logger.info(
             "Recycling node %s (%s) from pool %s",
@@ -762,9 +790,9 @@ class NodePoolRecycler:
             node_pool_id,
         )
 
-        ce_client = self._get_ce_client(region)
+        ce_client = self._get_ce_client(context)
         if not ce_client:
-            message = f"No Container Engine client available for region {region}"
+            message = f"No Container Engine client available for region {context.region}"
             self.logger.error(message)
             self._errors.append(message)
             return WorkRequestResult(
@@ -798,7 +826,7 @@ class NodePoolRecycler:
         work_request_id = response.headers.get("opc-work-request-id")
         if work_request_id:
             result = self._wait_for_work_request(
-                region,
+                context,
                 work_request_id,
                 f"Recycle node {plan.host_name} ({plan.instance_id})",
             )
@@ -822,12 +850,12 @@ class NodePoolRecycler:
         )
 
     def _wait_for_work_request(
-        self, region: str, work_request_id: str, description: str
+        self, context: CompartmentContext, work_request_id: str, description: str
     ) -> WorkRequestResult:
         self.logger.info("Waiting on work request %s for %s", work_request_id, description)
-        ce_client = self._get_ce_client(region)
+        ce_client = self._get_ce_client(context)
         if not ce_client:
-            message = f"No Container Engine client available for region {region}"
+            message = f"No Container Engine client available for region {context.region}"
             self.logger.error(message)
             self._errors.append(message)
             return WorkRequestResult(
@@ -894,7 +922,7 @@ class NodePoolRecycler:
                     description,
                     status,
                 )
-                errors = self._collect_work_request_errors(region, work_request_id)
+                errors = self._collect_work_request_errors(context, work_request_id)
                 for error_message in errors:
                     self._errors.append(
                         f"Work request {work_request_id} ({description}) error: {error_message}"
@@ -911,11 +939,13 @@ class NodePoolRecycler:
 
             time.sleep(self.poll_seconds)
 
-    def _collect_work_request_errors(self, region: str, work_request_id: str) -> List[str]:
+    def _collect_work_request_errors(
+        self, context: CompartmentContext, work_request_id: str
+    ) -> List[str]:
         errors: List[str] = []
-        ce_client = self._get_ce_client(region)
+        ce_client = self._get_ce_client(context)
         if not ce_client:
-            message = f"No Container Engine client available for region {region}"
+            message = f"No Container Engine client available for region {context.region}"
             self.logger.error(message)
             self._errors.append(message)
             return errors
@@ -928,7 +958,7 @@ class NodePoolRecycler:
             self.logger.error(
                 "Failed to fetch errors for work request %s in %s: %s",
                 work_request_id,
-                region,
+                context.region,
                 exc.message,
             )
             return errors
@@ -947,10 +977,8 @@ class NodePoolRecycler:
 
         report_lines: List[str] = []
         generated_at = datetime.now(timezone.utc).isoformat()
-        if self.regions:
-            region_value = ", ".join(self.regions)
-        else:
-            region_value = self.base_config.get("region", "unknown")
+        used_regions = sorted({context[2] for context in self._used_contexts})
+        region_value = ", ".join(used_regions) if used_regions else "unknown"
 
         # Produce a ready-to-share Markdown summary covering scope, timings, and post-health.
         report_lines.append("# OKE Node Pool Recycle Report")
@@ -959,7 +987,9 @@ class NodePoolRecycler:
         if self._timestamp_label:
             report_lines.append(f"- Run ID: {self._timestamp_label}")
         report_lines.append(f"- CSV Source: {self.csv_path}")
-        report_lines.append(f"- Profile: {self.base_profile}")
+        report_lines.append(f"- Meta Source: {self.meta_file}")
+        config_display = self.config_file if self.config_file else "~/.oci/config (default)"
+        report_lines.append(f"- Config File: {config_display}")
         report_lines.append(f"- Regions Evaluated: {region_value}")
         report_lines.append(f"- Dry Run: {'Yes' if self.dry_run else 'No'}")
         if self._log_path:
@@ -1001,7 +1031,7 @@ class NodePoolRecycler:
                 report_lines.append(
                     "| `{pool}` | {region} | {image} | {status} | {duration} | {completed} | {state} | {health} |".format(
                         pool=summary.node_pool_id,
-                        region=summary.region,
+                        region=summary.context.region,
                         image=summary.target_image,
                         status=status,
                         duration=duration,
@@ -1018,7 +1048,13 @@ class NodePoolRecycler:
 
             update_result = summary.update_result
             report_lines.append(f"- Target image: `{summary.target_image}`")
-            report_lines.append(f"- Region: {summary.region}")
+            report_lines.append(
+                "- Scope: project={project}, stage={stage}, region={region}".format(
+                    project=summary.context.project,
+                    stage=summary.context.stage,
+                    region=summary.context.region,
+                )
+            )
             report_lines.append(
                 f"- Update status: {update_result.status if update_result else 'N/A'}"
             )
@@ -1107,6 +1143,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Optional path to the OCI config file (defaults to ~/.oci/config).",
     )
     parser.add_argument(
+        "--meta-file",
+        type=Path,
+        help="Optional path to meta.yaml (defaults to tools/meta.yaml).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Plan actions without invoking OCI operations.",
@@ -1131,12 +1172,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     csv_path = args.csv_path.expanduser().resolve()
     config_file = args.config_file.expanduser().resolve() if args.config_file else None
+    meta_file = args.meta_file.expanduser().resolve() if args.meta_file else None
 
     recycler = NodePoolRecycler(
         csv_path=csv_path,
         config_file=config_file,
         dry_run=args.dry_run,
         poll_seconds=args.poll_seconds,
+        meta_file=meta_file,
     )
     return recycler.run()
 
