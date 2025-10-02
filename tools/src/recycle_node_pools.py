@@ -21,7 +21,11 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import oci
 from oci import exceptions as oci_exceptions
 from oci.container_engine import ContainerEngineClient
-from oci.container_engine.models import UpdateNodePoolDetails
+from oci.container_engine.models import (
+    UpdateNodePoolDetails,
+    UpdateNodePoolNodeConfigDetails,
+    UpdateNodeSourceViaImageDetails,
+)
 from oci.pagination import list_call_get_all_results
 import yaml
 
@@ -84,6 +88,10 @@ class NodePoolSummary:
     node_pool_id: str
     target_image: str
     context: "CompartmentContext"
+    compartment_id: Optional[str] = None
+    original_image_name: Optional[str] = None
+    original_image_id: Optional[str] = None
+    target_image_id: Optional[str] = None
     update_result: Optional[WorkRequestResult] = None
     node_results: List[WorkRequestResult] = field(default_factory=list)
     post_state: Optional[str] = None
@@ -230,7 +238,7 @@ class NodePoolRecycler:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         log_path = self.log_dir / f"node_pool_recycle_{timestamp}.log"
-        report_path = self.log_dir / f"node_pool_recycle_{timestamp}.md"
+        report_path = self.log_dir / f"node_pool_recycle_{timestamp}.html"
         self._timestamp_label = timestamp
         self._log_path = log_path
         self._report_path = report_path
@@ -624,6 +632,22 @@ class NodePoolRecycler:
 
         return None
 
+    @staticmethod
+    def _extract_node_pool_image_id(
+        node_pool: oci.container_engine.models.NodePool,
+    ) -> Optional[str]:
+        node_config = getattr(node_pool, "node_config_details", None)
+        if node_config:
+            source_details = getattr(node_config, "node_source_details", None)
+            if source_details:
+                image_id = getattr(source_details, "image_id", None)
+                if image_id:
+                    return image_id
+        source_details = getattr(node_pool, "node_source_details", None)
+        if source_details:
+            return getattr(source_details, "image_id", None)
+        return None
+
     def _resolve_image_name(
         self, context: CompartmentContext, instance: oci.core.models.Instance
     ) -> Optional[str]:
@@ -660,6 +684,61 @@ class NodePoolRecycler:
         name = image.display_name or image_id
         self._image_cache[image_id] = name
         return name
+
+    def _resolve_target_image_id(
+        self,
+        context: CompartmentContext,
+        compartment_id: Optional[str],
+        image_identifier: str,
+    ) -> Optional[str]:
+        """Resolve a target image identifier (name or OCID) to an image OCID."""
+
+        if not image_identifier:
+            return None
+        if image_identifier.startswith("ocid1.image"):
+            return image_identifier
+
+        if not compartment_id:
+            return None
+
+        client = self._get_client(context)
+        if not client:
+            return None
+
+        compute_client = client.compute_client
+        try:
+            response = list_call_get_all_results(
+                compute_client.list_images,
+                compartment_id,
+                display_name=image_identifier,
+                sort_by="TIMECREATED",
+                sort_order="DESC",
+            )
+        except oci_exceptions.ServiceError as exc:
+            message = (
+                "Failed to list images for display name '{name}' in compartment {compartment}: {error}".format(
+                    name=image_identifier,
+                    compartment=compartment_id,
+                    error=exc.message,
+                )
+            )
+            self.logger.error(message)
+            self._errors.append(message)
+            return None
+
+        for image in response.data:
+            if getattr(image, "display_name", None) == image_identifier:
+                return getattr(image, "id", None)
+
+        message = (
+            "Unable to resolve image ID for display name '{name}' in compartment {compartment}".format(
+                name=image_identifier,
+                compartment=compartment_id,
+            )
+        )
+        self.logger.error(message)
+        self._errors.append(message)
+        return None
 
     def _get_node_pool(
         self, context: CompartmentContext, node_pool_id: str
@@ -735,17 +814,22 @@ class NodePoolRecycler:
                 continue
 
             current_image_name = getattr(node_pool, "node_image_name", None)
+            current_image_id = self._extract_node_pool_image_id(node_pool)
             if current_image_name:
                 self.logger.info(
                     "Node pool %s currently using image '%s'",
                     action.node_pool_id,
                     current_image_name,
                 )
+            summary_compartment = action.nodes[0].compartment_id if action.nodes else None
 
             summary = NodePoolSummary(
                 node_pool_id=action.node_pool_id,
                 target_image=action.new_image_name,
                 context=action.context,
+                compartment_id=summary_compartment,
+                original_image_name=current_image_name,
+                original_image_id=current_image_id,
             )
 
             if self.dry_run:
@@ -760,8 +844,28 @@ class NodePoolRecycler:
                     status="DRY_RUN",
                 )
             else:
+                target_image_id = self._resolve_target_image_id(
+                    action.context,
+                    summary_compartment,
+                    action.new_image_name,
+                )
+                summary.target_image_id = target_image_id
+                if not target_image_id:
+                    summary.update_result = WorkRequestResult(
+                        description=f"Update node pool {action.node_pool_id}",
+                        status="FAILED",
+                        errors=[
+                            "Unable to resolve target image identifier"
+                            f" '{action.new_image_name}'"
+                        ],
+                    )
+                    self._summaries.append(summary)
+                    continue
                 summary.update_result = self._update_node_pool_image(
-                    action.context, action.node_pool_id, action.new_image_name
+                    action.context,
+                    action.node_pool_id,
+                    target_image_id,
+                    action.new_image_name,
                 )
 
             for node in action.nodes:
@@ -792,17 +896,21 @@ class NodePoolRecycler:
             self._summaries.append(summary)
 
     def _update_node_pool_image(
-        self, context: CompartmentContext, node_pool_id: str, new_image_name: str
+        self,
+        context: CompartmentContext,
+        node_pool_id: str,
+        target_image_id: str,
+        target_image_name: str,
     ) -> WorkRequestResult:
         """Update the node pool to the new image and wait for the work request."""
         self.logger.info(
             "Updating node pool %s with new node image '%s'",
             node_pool_id,
-            new_image_name,
+            target_image_name,
         )
         details = UpdateNodePoolDetails(
             node_config_details=UpdateNodePoolNodeConfigDetails(
-                node_source_details=UpdateNodeSourceViaImageDetails(image_id=new_image_name)
+                node_source_details=UpdateNodeSourceViaImageDetails(image_id=target_image_id)
             )
         )
         ce_client = self._get_ce_client(context)
@@ -1041,48 +1149,101 @@ class NodePoolRecycler:
         return errors
 
     def _generate_report(self) -> None:
-        """Emit a Markdown report summarizing the recycle operation."""
+        "Emit an HTML report summarizing the recycle operation."
         if not self._report_path:
             return
 
-        report_lines: List[str] = []
         generated_at = datetime.now(timezone.utc).isoformat()
         used_regions = sorted({context[2] for context in self._used_contexts})
         region_value = ", ".join(used_regions) if used_regions else "unknown"
 
-        # Produce a ready-to-share Markdown summary covering scope, timings, and post-health.
-        report_lines.append("# OKE Node Pool Recycle Report")
-        report_lines.append("")
-        report_lines.append(f"- Generated: {generated_at}")
+        def html_escape(value: Optional[str]) -> str:
+            if value is None:
+                return ""
+            return (
+                str(value)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        html: List[str] = []
+        html.append("<!DOCTYPE html>")
+        html.append('<html lang="en">')
+        html.append("<head>")
+        html.append('<meta charset="utf-8"/>')
+        html.append(
+            f"<title>OKE Node Pool Recycle Report - {html_escape(self._timestamp_label or generated_at)}</title>"
+        )
+        html.append(
+            "<style>"
+            "body{font-family:Arial,Helvetica,sans-serif;background:#f7f7f9;color:#1d1d1f;margin:24px;}"
+            "h1{color:#0b5394;}"
+            "section{margin-bottom:32px;background:#fff;padding:20px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1);}""
+            "table{width:100%;border-collapse:collapse;margin-top:12px;}"
+            "th,td{padding:8px 12px;border:1px solid #d9d9e0;text-align:left;font-size:14px;}"
+            "th{background:#0b5394;color:#fff;}"
+            "tr:nth-child(even){background:#f2f5f9;}"
+            ".status-SUCCEEDED{color:#0b8a00;font-weight:600;}"
+            ".status-FAILED{color:#d4351c;font-weight:600;}"
+            ".status-DRY_RUN{color:#946200;font-weight:600;}"
+            ".status-UNKNOWN{color:#6c757d;font-weight:600;}"
+            "code{background:#f0f0f5;padding:2px 4px;border-radius:4px;font-size:13px;}"
+            ".nodes-table th{background:#2f5496;}"
+            ".skipped{background:#fffbe6;}"
+            "</style>"
+        )
+        html.append("</head>")
+        html.append("<body>")
+        html.append("<h1>OKE Node Pool Recycle Report</h1>")
+
+        html.append("<section>")
+        html.append("<h2>Run Summary</h2>")
+        html.append("<ul>")
+        html.append(f"<li><strong>Generated:</strong> {html_escape(generated_at)}</li>")
         if self._timestamp_label:
-            report_lines.append(f"- Run ID: {self._timestamp_label}")
-        report_lines.append(f"- CSV Source: {self.csv_path}")
-        report_lines.append(f"- Meta Source: {self.meta_file}")
+            html.append(
+                f"<li><strong>Run ID:</strong> {html_escape(self._timestamp_label)}</li>"
+            )
+        html.append(f"<li><strong>CSV Source:</strong> {html_escape(str(self.csv_path))}</li>")
+        html.append(f"<li><strong>Meta Source:</strong> {html_escape(str(self.meta_file))}</li>")
         config_display = self.config_file if self.config_file else "~/.oci/config (default)"
-        report_lines.append(f"- Config File: {config_display}")
-        report_lines.append(f"- Regions Evaluated: {region_value}")
-        report_lines.append(f"- Dry Run: {'Yes' if self.dry_run else 'No'}")
-        report_lines.append(
-            f"- Rows processed: {self._total_rows} (resolved {self._resolved_rows}, skipped {len(self._missing_hosts)})"
+        html.append(
+            f"<li><strong>Config File:</strong> {html_escape(str(config_display))}</li>"
+        )
+        html.append(
+            f"<li><strong>Regions Evaluated:</strong> {html_escape(region_value)}</li>"
+        )
+        html.append(
+            f"<li><strong>Dry Run:</strong> {'Yes' if self.dry_run else 'No'}</li>"
+        )
+        html.append(
+            f"<li><strong>Rows Processed:</strong> {self._total_rows} (resolved {self._resolved_rows}, skipped {len(self._missing_hosts)})</li>"
         )
         if self._log_path:
-            report_lines.append(f"- Log File: {self._log_path}")
-        report_lines.append("")
+            html.append(
+                f"<li><strong>Log File:</strong> {html_escape(str(self._log_path))}</li>"
+            )
+        html.append("</ul>")
+        html.append("</section>")
 
-        report_lines.append("## Node Pool Summary")
-        report_lines.append(
-            "| Node Pool | Region | Target Image | Update Status | Duration (s) | Completed At | Post State | Healthy/Total Nodes |"
+        html.append("<section>")
+        html.append("<h2>Node Pool Summary</h2>")
+        html.append(
+            "<table class="summary-table"><thead><tr>"
+            "<th>Node Pool</th><th>Compartment</th><th>Project</th><th>Environment</th>"
+            "<th>Region</th><th>Image (Before)</th><th>Image (After)</th><th>Status</th>"
+            "<th>Duration (s)</th><th>Completed At</th><th>Healthy/Total</th>"
+            "</tr></thead><tbody>"
         )
-        report_lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
 
         if not self._summaries:
-            report_lines.append(
-                "| _None_ | _N/A_ | _N/A_ | _N/A_ | _N/A_ | _N/A_ | _N/A_ | _N/A_ |"
-            )
+            html.append("<tr><td colspan="11">No node pools were processed.</td></tr>")
         else:
             for summary in self._summaries:
                 update_result = summary.update_result
                 status = update_result.status if update_result else "N/A"
+                status_class = f"status-{status}" if update_result else ""
                 duration = (
                     f"{update_result.duration_seconds:.1f}"
                     if update_result and update_result.duration_seconds is not None
@@ -1101,62 +1262,89 @@ class NodePoolRecycler:
                 )
                 total = len(summary.post_node_states)
                 healthy_display = f"{healthy}/{total}" if total else "0/0"
-                report_lines.append(
-                    "| `{pool}` | {region} | {image} | {status} | {duration} | {completed} | {state} | {health} |".format(
-                        pool=summary.node_pool_id,
-                        region=summary.context.region,
-                        image=summary.target_image,
-                        status=status,
-                        duration=duration,
-                        completed=completed_at,
-                        state=post_state,
-                        health=healthy_display,
-                    )
+                before_html = (
+                    f"{html_escape(summary.original_image_name) or 'Unknown'}"
+                    f"<br/><code>{html_escape(summary.original_image_id) or '—'}</code>"
                 )
+                after_html = (
+                    f"{html_escape(summary.target_image) or 'Unknown'}"
+                    f"<br/><code>{html_escape(summary.target_image_id) or '—'}</code>"
+                )
+                html.append("<tr>")
+                html.append(f"<td><code>{html_escape(summary.node_pool_id)}</code></td>")
+                html.append(f"<td>{html_escape(summary.compartment_id) or 'Unknown'}</td>")
+                html.append(f"<td>{html_escape(summary.context.project)}</td>")
+                html.append(f"<td>{html_escape(summary.context.stage)}</td>")
+                html.append(f"<td>{html_escape(summary.context.region)}</td>")
+                html.append(f"<td>{before_html}</td>")
+                html.append(f"<td>{after_html}</td>")
+                html.append(f"<td class='{status_class}'>{html_escape(status)}</td>")
+                html.append(f"<td>{duration}</td>")
+                html.append(f"<td>{html_escape(completed_at)}</td>")
+                html.append(f"<td>{healthy_display}</td>")
+                html.append("</tr>")
+        html.append("</tbody></table>")
+        html.append("</section>")
 
         for summary in self._summaries:
-            report_lines.append("")
-            report_lines.append(f"### Node Pool `{summary.node_pool_id}`")
-            report_lines.append("")
+            html.append("<section>")
+            html.append(
+                f"<h3>Node Pool Detail: <code>{html_escape(summary.node_pool_id)}</code></h3>"
+            )
+            html.append(
+                "<p>Project <strong>{project}</strong> &middot; Environment <strong>{stage}</strong> &middot; "
+                "Region <strong>{region}</strong> &middot; Compartment <code>{compartment}</code></p>".format(
+                    project=html_escape(summary.context.project),
+                    stage=html_escape(summary.context.stage),
+                    region=html_escape(summary.context.region),
+                    compartment=html_escape(summary.compartment_id) or "Unknown",
+                )
+            )
+            html.append(
+                "<p><strong>Image before:</strong> {before} <code>{before_id}</code><br/>"
+                "<strong>Image after:</strong> {after} <code>{after_id}</code></p>".format(
+                    before=html_escape(summary.original_image_name) or "Unknown",
+                    before_id=html_escape(summary.original_image_id) or "—",
+                    after=html_escape(summary.target_image) or "Unknown",
+                    after_id=html_escape(summary.target_image_id) or "—",
+                )
+            )
 
             update_result = summary.update_result
-            report_lines.append(f"- Target image: `{summary.target_image}`")
-            report_lines.append(
-                "- Scope: project={project}, stage={stage}, region={region}".format(
-                    project=summary.context.project,
-                    stage=summary.context.stage,
-                    region=summary.context.region,
+            if update_result:
+                html.append("<ul>")
+                html.append(
+                    f"<li><strong>Status:</strong> <span class='status-{html_escape(update_result.status)}'>{html_escape(update_result.status)}</span></li>"
                 )
-            )
-            report_lines.append(
-                f"- Update status: {update_result.status if update_result else 'N/A'}"
-            )
-            report_lines.append(f"- Post image: {summary.post_image_name or 'Unknown'}")
-            report_lines.append(f"- Post state: {summary.post_state or 'Unknown'}")
-            if update_result and update_result.work_request_id:
-                report_lines.append(f"- Work request ID: `{update_result.work_request_id}`")
-            if update_result and update_result.accepted_time:
-                report_lines.append(
-                    f"- Work request accepted: {update_result.accepted_time.isoformat()}"
-                )
-            if update_result and update_result.finished_time:
-                report_lines.append(
-                    f"- Work request finished: {update_result.finished_time.isoformat()}"
-                )
-            if update_result and update_result.duration_seconds is not None:
-                report_lines.append(f"- Duration: {update_result.duration_seconds:.1f} seconds")
-            if update_result and update_result.errors:
-                report_lines.append("- Update errors:")
-                for err in update_result.errors:
-                    report_lines.append(f"  - {err}")
+                if update_result.work_request_id:
+                    html.append(
+                        f"<li><strong>Work Request:</strong> <code>{html_escape(update_result.work_request_id)}</code></li>"
+                    )
+                if update_result.accepted_time:
+                    html.append(
+                        f"<li><strong>Accepted:</strong> {html_escape(update_result.accepted_time.isoformat())}</li>"
+                    )
+                if update_result.finished_time:
+                    html.append(
+                        f"<li><strong>Completed:</strong> {html_escape(update_result.finished_time.isoformat())}</li>"
+                    )
+                if update_result.duration_seconds is not None:
+                    html.append(
+                        f"<li><strong>Duration:</strong> {update_result.duration_seconds:.1f} seconds</li>"
+                    )
+                if update_result.errors:
+                    html.append("<li><strong>Errors:</strong><ul>")
+                    for err in update_result.errors:
+                        html.append(f"<li>{html_escape(err)}</li>")
+                    html.append("</ul></li>")
+                html.append("</ul>")
 
-            report_lines.append("")
-            report_lines.append(
-                "| Node | Status | Duration (s) | Completed At | Work Request | Notes |"
+            html.append("<h4>Node Operations</h4>")
+            html.append(
+                "<table class="nodes-table"><thead><tr><th>Description</th><th>Status</th><th>Duration (s)</th><th>Completed At</th><th>Work Request</th><th>Notes</th></tr></thead><tbody>"
             )
-            report_lines.append("| --- | --- | --- | --- | --- | --- |")
             if not summary.node_results:
-                report_lines.append("| _None_ | _N/A_ | _N/A_ | _N/A_ | _N/A_ | _N/A_ |")
+                html.append("<tr><td colspan="6">No node recycle operations were recorded.</td></tr>")
             else:
                 for node_result in summary.node_results:
                     duration_val = (
@@ -1168,47 +1356,59 @@ class NodePoolRecycler:
                         node_result.finished_time.isoformat() if node_result.finished_time else "—"
                     )
                     work_request_val = (
-                        f"`{node_result.work_request_id}`" if node_result.work_request_id else "—"
+                        html_escape(node_result.work_request_id)
+                        if node_result.work_request_id
+                        else "—"
                     )
-                    notes = "; ".join(node_result.errors) if node_result.errors else ""
-                    report_lines.append(
-                        "| {description} | {status} | {duration} | {finished} | {wr} | {notes} |".format(
-                            description=node_result.description,
-                            status=node_result.status,
-                            duration=duration_val,
-                            finished=finished_val,
-                            wr=work_request_val,
-                            notes=notes or "—",
-                        )
+                    notes = "; ".join(node_result.errors) if node_result.errors else "—"
+                    html.append(
+                        "<tr>"
+                        f"<td>{html_escape(node_result.description)}</td>"
+                        f"<td class='status-{html_escape(node_result.status)}'>{html_escape(node_result.status)}</td>"
+                        f"<td>{duration_val}</td>"
+                        f"<td>{html_escape(finished_val)}</td>"
+                        f"<td>{work_request_val}</td>"
+                        f"<td>{html_escape(notes)}</td>"
+                        "</tr>"
                     )
+            html.append("</tbody></table>")
 
-            report_lines.append("")
-            report_lines.append("Post-operation node health:")
-            report_lines.append("")
-            report_lines.append("| Node | Lifecycle State |")
-            report_lines.append("| --- | --- |")
+            html.append("<h4>Post-operation Node Health</h4>")
+            html.append(
+                "<table><thead><tr><th>Node</th><th>Lifecycle State</th></tr></thead><tbody>"
+            )
             if not summary.post_node_states:
-                report_lines.append("| _Unknown_ | _N/A_ |")
+                html.append("<tr><td colspan="2">Unknown</td></tr>")
             else:
                 for node_name, state in summary.post_node_states:
-                    report_lines.append(f"| `{node_name}` | {state or 'Unknown'} |")
+                    html.append(
+                        f"<tr><td><code>{html_escape(node_name)}</code></td><td>{html_escape(state) or 'Unknown'}</td></tr>"
+                    )
+            html.append("</tbody></table>")
+            html.append("</section>")
 
         if self._missing_hosts:
-            report_lines.append("")
-            report_lines.append("## Skipped Hosts")
-            report_lines.append("")
-            report_lines.append("| Host | Compartment | Reason |")
-            report_lines.append("| --- | --- | --- |")
+            html.append("<section class="skipped">")
+            html.append("<h2>Skipped Hosts</h2>")
+            html.append(
+                "<table><thead><tr><th>Host</th><th>Compartment</th><th>Reason</th></tr></thead><tbody>"
+            )
             for host, compartment, reason in self._missing_hosts:
-                report_lines.append(f"| `{host}` | `{compartment}` | {reason} |")
+                html.append(
+                    f"<tr><td><code>{html_escape(host)}</code></td><td><code>{html_escape(compartment)}</code></td><td>{html_escape(reason)}</td></tr>"
+                )
+            html.append("</tbody></table>")
+            html.append("</section>")
 
-        report_lines.append("")
+        html.append("</body></html>")
 
         self._report_path.parent.mkdir(parents=True, exist_ok=True)
         with self._report_path.open("w", encoding="utf-8") as handle:
-            handle.write("\n".join(report_lines) + "\n")
+            handle.write("
+".join(html))
 
         self.logger.info("Operation report written to %s", self._report_path)
+
         self.logger.info(
             "Recycle summary: %d total row(s), %d resolved, %d skipped",
             self._total_rows,
