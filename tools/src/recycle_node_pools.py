@@ -778,7 +778,11 @@ class NodePoolRecycler:
             node_pool_id,
             new_image_name,
         )
-        details = UpdateNodePoolDetails(node_image_name=new_image_name)
+        details = UpdateNodePoolDetails(
+            node_config_details=UpdateNodePoolNodeConfigDetails(
+                node_source_details=UpdateNodeSourceViaImageDetails(image_id=new_image_name)
+            )
+        )
         ce_client = self._get_ce_client(context)
         if not ce_client:
             message = f"No Container Engine client available for region {context.region}"
