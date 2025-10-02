@@ -553,16 +553,23 @@ class NodePoolRecycler:
     @staticmethod
     def _candidate_names(instance: oci.core.models.Instance) -> List[str]:
         names: List[str] = []
-        if instance.display_name:
-            names.append(instance.display_name.lower())
-        if instance.hostname_label:
-            names.append(instance.hostname_label.lower())
-        if instance.metadata:
+        display_name = getattr(instance, "display_name", None)
+        if display_name:
+            names.append(str(display_name).lower())
+
+        hostname_label = getattr(instance, "hostname_label", None)
+        if hostname_label:
+            names.append(str(hostname_label).lower())
+
+        metadata = getattr(instance, "metadata", None)
+        if isinstance(metadata, dict):
             hostname = instance.metadata.get("hostname") or instance.metadata.get("HostName")
             if hostname:
                 names.append(str(hostname).lower())
-        if instance.fqdn:
-            names.append(instance.fqdn.lower())
+
+        fqdn = getattr(instance, "fqdn", None)
+        if fqdn:
+            names.append(str(fqdn).lower())
         return names
 
     def _extract_node_pool_id(self, instance: oci.core.models.Instance) -> Optional[str]:
