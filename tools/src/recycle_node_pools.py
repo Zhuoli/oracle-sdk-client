@@ -330,34 +330,33 @@ class NodePoolRecycler:
                     "CSV header missing required columns: " + ", ".join(sorted(missing))
                 )
                 return []
+            rows: List[CsvInstruction] = []
+            for raw_row in reader:
+                if not raw_row:
+                    continue
+                host = (raw_row.get(column_map["compute instance host name"], "") or "").strip()
+                compartment = (raw_row.get(column_map["compartment id"], "") or "").strip()
+                current_image = (raw_row.get(column_map["current image"], "") or "").strip()
+                new_image = (raw_row.get(column_map["new image name"], "") or "").strip()
 
-        rows: List[CsvInstruction] = []
-        for raw_row in reader:
-            if not raw_row:
-                continue
-            host = (raw_row.get(column_map["compute instance host name"], "") or "").strip()
-            compartment = (raw_row.get(column_map["compartment id"], "") or "").strip()
-            current_image = (raw_row.get(column_map["current image"], "") or "").strip()
-            new_image = (raw_row.get(column_map["new image name"], "") or "").strip()
+                if not (host and compartment and new_image):
+                    self.logger.warning(
+                        "Skipping row with missing required data: host=%r compartment=%r new_image=%r",
+                        host,
+                        compartment,
+                        new_image,
+                    )
+                    continue
 
-            if not (host and compartment and new_image):
-                self.logger.warning(
-                    "Skipping row with missing required data: host=%r compartment=%r new_image=%r",
-                    host,
-                    compartment,
-                    new_image,
+                rows.append(
+                    CsvInstruction(
+                        host_name=host,
+                        compartment_id=compartment,
+                        current_image=current_image,
+                        new_image_name=new_image,
+                    )
                 )
-                continue
-
-            rows.append(
-                CsvInstruction(
-                    host_name=host,
-                    compartment_id=compartment,
-                    current_image=current_image,
-                    new_image_name=new_image,
-                )
-            )
-            self._total_rows += 1
+                self._total_rows += 1
 
         self.logger.info("Loaded %d instruction(s) from %s", len(rows), self.csv_path)
         return rows
