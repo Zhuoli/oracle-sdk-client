@@ -27,7 +27,7 @@ help:
 	@echo "  clean         Clean up temporary files and caches"
 	@echo ""
 	@echo "Production Operations:"
-	@echo "  recycle-node-pools CSV=<file> [DRY_RUN=1] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)]"
+	@echo "  recycle-node-pools CSV=<file> [DRY_RUN=1]"
 	@echo ""
 	@echo "SSH Sync Configuration:"
 	@echo "  Uses meta.yaml configuration file for project/stage/region mapping"
@@ -186,7 +186,7 @@ clean:
 recycle-node-pools:
 	@if [ -z "$(CSV)" ]; then \
 		echo "❌ Error: CSV=<file> is required"; \
-		echo "Usage: make recycle-node-pools CSV=oke_nodes.csv [DRY_RUN=1] [CONFIG=~/.oci/config]"; \
+			echo "Usage: make recycle-node-pools CSV=oke_nodes.csv [DRY_RUN=1]"; \
 		exit 1; \
 	fi
 	@echo "♻️  Recycling OKE node pools from $(CSV)"
@@ -198,7 +198,11 @@ recycle-node-pools:
 	if [ -n "$(CONFIG)" ]; then \
 		CONFIG_FLAG="--config-file ../$(CONFIG)"; \
 	fi; \
-	cd tools && poetry run python src/recycle_node_pools.py --csv-path "../$(CSV)" --poll-seconds "$(POLL_SECONDS)" $$CONFIG_FLAG $$DRY_RUN_FLAG
+	POLL_FLAG=""; \
+	if [ -n "$(POLL_SECONDS)" ]; then \
+		POLL_FLAG="--poll-seconds $(POLL_SECONDS)"; \
+	fi; \
+	cd tools && poetry run python src/recycle_node_pools.py --csv-path "../$(CSV)" $$POLL_FLAG $$CONFIG_FLAG $$DRY_RUN_FLAG
 
 # Example environment setup (for documentation)
 setup-example:
