@@ -139,6 +139,9 @@ class NodePoolRecycler:
 
         self._configure_logging()
         self._compartment_lookup: Dict[str, CompartmentContext] = self._load_compartment_lookup()
+        self._total_rows: int = 0
+        self._resolved_rows: int = 0
+        self._missing_hosts: List[Tuple[str, str]] = []
 
     # ------------------------------------------------------------------
     # Public execution entrypoint
@@ -328,32 +331,33 @@ class NodePoolRecycler:
                 )
                 return []
 
-            rows: List[CsvInstruction] = []
-            for raw_row in reader:
-                if not raw_row:
-                    continue
-                host = (raw_row.get(column_map["compute instance host name"], "") or "").strip()
-                compartment = (raw_row.get(column_map["compartment id"], "") or "").strip()
-                current_image = (raw_row.get(column_map["current image"], "") or "").strip()
-                new_image = (raw_row.get(column_map["new image name"], "") or "").strip()
+        rows: List[CsvInstruction] = []
+        for raw_row in reader:
+            if not raw_row:
+                continue
+            host = (raw_row.get(column_map["compute instance host name"], "") or "").strip()
+            compartment = (raw_row.get(column_map["compartment id"], "") or "").strip()
+            current_image = (raw_row.get(column_map["current image"], "") or "").strip()
+            new_image = (raw_row.get(column_map["new image name"], "") or "").strip()
 
-                if not (host and compartment and new_image):
-                    self.logger.warning(
-                        "Skipping row with missing required data: host=%r compartment=%r new_image=%r",
-                        host,
-                        compartment,
-                        new_image,
-                    )
-                    continue
-
-                rows.append(
-                    CsvInstruction(
-                        host_name=host,
-                        compartment_id=compartment,
-                        current_image=current_image,
-                        new_image_name=new_image,
-                    )
+            if not (host and compartment and new_image):
+                self.logger.warning(
+                    "Skipping row with missing required data: host=%r compartment=%r new_image=%r",
+                    host,
+                    compartment,
+                    new_image,
                 )
+                continue
+
+            rows.append(
+                CsvInstruction(
+                    host_name=host,
+                    compartment_id=compartment,
+                    current_image=current_image,
+                    new_image_name=new_image,
+                )
+            )
+            self._total_rows += 1
 
         self.logger.info("Loaded %d instruction(s) from %s", len(rows), self.csv_path)
         return rows
@@ -411,8 +415,11 @@ class NodePoolRecycler:
                 instruction.host_name, instruction.compartment_id, context
             )
             if not instance:
-                self._errors.append(
-                    f"Could not locate compute instance for host '{instruction.host_name}'"
+                self._missing_hosts.append((instruction.host_name, instruction.compartment_id))
+                self.logger.warning(
+                    "Skipping host '%s' (compartment %s) because no active compute instance was found",
+                    instruction.host_name,
+                    instruction.compartment_id,
                 )
                 continue
 
@@ -480,6 +487,8 @@ class NodePoolRecycler:
                     )
                     continue
                 action.nodes.append(plan_entry)
+
+            self._resolved_rows += 1
 
         filtered = [action for action in plans.values() if action.nodes]
         self.logger.info(
@@ -1040,6 +1049,9 @@ class NodePoolRecycler:
         report_lines.append(f"- Config File: {config_display}")
         report_lines.append(f"- Regions Evaluated: {region_value}")
         report_lines.append(f"- Dry Run: {'Yes' if self.dry_run else 'No'}")
+        report_lines.append(
+            f"- Rows processed: {self._total_rows} (resolved {self._resolved_rows}, skipped {len(self._missing_hosts)})"
+        )
         if self._log_path:
             report_lines.append(f"- Log File: {self._log_path}")
         report_lines.append("")
@@ -1168,6 +1180,17 @@ class NodePoolRecycler:
                 for node_name, state in summary.post_node_states:
                     report_lines.append(f"| `{node_name}` | {state or 'Unknown'} |")
 
+        if self._missing_hosts:
+            report_lines.append("")
+            report_lines.append("## Skipped Hosts")
+            report_lines.append("")
+            report_lines.append("| Host | Compartment | Reason |")
+            report_lines.append("| --- | --- | --- |")
+            for host, compartment in self._missing_hosts:
+                report_lines.append(
+                    f"| `{host}` | `{compartment}` | No active compute instance found |"
+                )
+
         report_lines.append("")
 
         self._report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1175,6 +1198,12 @@ class NodePoolRecycler:
             handle.write("\n".join(report_lines) + "\n")
 
         self.logger.info("Operation report written to %s", self._report_path)
+        self.logger.info(
+            "Recycle summary: %d total row(s), %d resolved, %d skipped",
+            self._total_rows,
+            self._resolved_rows,
+            len(self._missing_hosts),
+        )
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
