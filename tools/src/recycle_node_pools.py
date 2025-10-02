@@ -141,7 +141,7 @@ class NodePoolRecycler:
         self._compartment_lookup: Dict[str, CompartmentContext] = self._load_compartment_lookup()
         self._total_rows: int = 0
         self._resolved_rows: int = 0
-        self._missing_hosts: List[Tuple[str, str]] = []
+        self._missing_hosts: List[Tuple[str, str, str]] = []
 
     # ------------------------------------------------------------------
     # Public execution entrypoint
@@ -415,7 +415,13 @@ class NodePoolRecycler:
                 instruction.host_name, instruction.compartment_id, context
             )
             if not instance:
-                self._missing_hosts.append((instruction.host_name, instruction.compartment_id))
+                self._missing_hosts.append(
+                    (
+                        instruction.host_name,
+                        instruction.compartment_id,
+                        "No active compute instance found",
+                    )
+                )
                 self.logger.warning(
                     "Skipping host '%s' (compartment %s) because no active compute instance was found",
                     instruction.host_name,
@@ -425,8 +431,16 @@ class NodePoolRecycler:
 
             node_pool_id = self._extract_node_pool_id(instance)
             if not node_pool_id:
-                self._errors.append(
-                    f"Instance '{instruction.host_name}' missing OKE node pool metadata"
+                self._missing_hosts.append(
+                    (
+                        instruction.host_name,
+                        instruction.compartment_id,
+                        "Missing OKE node pool metadata",
+                    )
+                )
+                self.logger.warning(
+                    "Skipping host '%s' because no OKE node pool metadata was found",
+                    instruction.host_name,
                 )
                 continue
 
@@ -519,15 +533,15 @@ class NodePoolRecycler:
                 matches.append(instance)
 
         if not matches:
-            self.logger.error(
+            self.logger.warning(
                 "No matching compute instance for host '%s' in compartment %s",
                 host_name,
                 compartment_id,
             )
             return None
         if len(matches) > 1:
-            self.logger.error(
-                "Multiple compute instances matched host '%s' in compartment %s",
+            self.logger.warning(
+                "Multiple compute instances matched host '%s' in compartment %s; skipping",
                 host_name,
                 compartment_id,
             )
@@ -1186,10 +1200,8 @@ class NodePoolRecycler:
             report_lines.append("")
             report_lines.append("| Host | Compartment | Reason |")
             report_lines.append("| --- | --- | --- |")
-            for host, compartment in self._missing_hosts:
-                report_lines.append(
-                    f"| `{host}` | `{compartment}` | No active compute instance found |"
-                )
+            for host, compartment, reason in self._missing_hosts:
+                report_lines.append(f"| `{host}` | `{compartment}` | {reason} |")
 
         report_lines.append("")
 
