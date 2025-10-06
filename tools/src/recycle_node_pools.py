@@ -1386,9 +1386,15 @@ class NodePoolRecycler:
     # ------------------------------------------------------------------
     # Execution helpers
     # ------------------------------------------------------------------
-    def _execute(self, plans: Iterable[NodePoolAction]) -> None:
-        """Execute the planned image upgrades and node recycling operations."""
-        for action in plans:
+    def _execute(
+        self,
+        node_pool_plans: Iterable[NodePoolAction],
+        instance_pool_plans: Iterable[InstancePoolAction]
+    ) -> None:
+        """Execute the planned image upgrades and recycling operations for both pool types."""
+
+        # Process OKE node pools (existing logic - DO NOT MODIFY)
+        for action in node_pool_plans:
             # Refresh before acting so we log the pre-change state alongside every work request.
             node_pool = self._get_node_pool(action.context, action.node_pool_id)
             if not node_pool:
@@ -1485,6 +1491,324 @@ class NodePoolRecycler:
             summary.post_image_name = post_image
             summary.post_node_states = post_nodes
             self._summaries.append(summary)
+
+        # Process compute instance pools (NEW logic for instance pool cycling)
+        for action in instance_pool_plans:
+            self.logger.info(
+                "Processing instance pool %s with %d instance(s)",
+                action.instance_pool_id,
+                len(action.instances)
+            )
+
+            summary_compartment = action.instances[0].compartment_id if action.instances else None
+            summary = InstancePoolSummary(
+                instance_pool_id=action.instance_pool_id,
+                target_image=action.new_image_name,
+                context=action.context,
+                compartment_id=summary_compartment,
+            )
+
+            if self.dry_run:
+                instance_count = len(action.instances)
+                self.logger.info(
+                    "[DRY RUN] Would update instance pool %s to image '%s' and cycle %d instance%s",
+                    action.instance_pool_id,
+                    action.new_image_name,
+                    instance_count,
+                    "s" if instance_count != 1 else "",
+                )
+                summary.update_result = WorkRequestResult(
+                    description=f"Update instance pool {action.instance_pool_id}",
+                    status="DRY_RUN",
+                )
+            else:
+                # Get current instance pool and configuration
+                cm_client = self._get_cm_client(action.context)
+                if not cm_client:
+                    summary.update_result = WorkRequestResult(
+                        description=f"Update instance pool {action.instance_pool_id}",
+                        status="FAILED",
+                        errors=["No Compute Management client available"],
+                    )
+                    self._instance_pool_summaries.append(summary)
+                    continue
+
+                # Cycle the instance pool
+                cycle_result = self._cycle_instance_pool(
+                    action.context,
+                    action.instance_pool_id,
+                    action.new_image_name,
+                    action.instances,
+                )
+                summary.update_result = cycle_result.get("pool_update")
+                summary.instance_results = cycle_result.get("instance_results", [])
+                summary.new_instance_config_id = cycle_result.get("new_config_id")
+                summary.detached_count = cycle_result.get("detached_count", 0)
+
+            # Capture post-state
+            try:
+                cm_client = self._get_cm_client(action.context)
+                if cm_client:
+                    pool = cm_client.get_instance_pool(action.instance_pool_id).data
+                    summary.post_state = pool.lifecycle_state
+                    summary.post_instance_count = pool.size
+            except Exception as exc:
+                self.logger.warning("Failed to capture instance pool post-state: %s", exc)
+
+            self._instance_pool_summaries.append(summary)
+
+    def _cycle_instance_pool(
+        self,
+        context: CompartmentContext,
+        instance_pool_id: str,
+        new_image_name: str,
+        instances: List[InstanceRecyclePlan],
+    ) -> Dict[str, Any]:
+        """Cycle an instance pool by updating config and detaching old instances.
+
+        Returns dict with:
+            - pool_update: WorkRequestResult for pool update
+            - instance_results: List of detach results
+            - new_config_id: New instance configuration OCID
+            - detached_count: Number of instances detached
+        """
+        result: Dict[str, Any] = {
+            "pool_update": None,
+            "instance_results": [],
+            "new_config_id": None,
+            "detached_count": 0,
+        }
+
+        cm_client = self._get_cm_client(context)
+        if not cm_client:
+            result["pool_update"] = WorkRequestResult(
+                description=f"Cycle instance pool {instance_pool_id}",
+                status="FAILED",
+                errors=["No Compute Management client available"],
+            )
+            return result
+
+        try:
+            # Get current instance pool
+            pool = cm_client.get_instance_pool(instance_pool_id).data
+            current_config_id = pool.instance_configuration_id
+
+            # Get current instance configuration
+            current_config = cm_client.get_instance_configuration(current_config_id).data
+
+            # Resolve target image ID
+            current_image_id = None
+            if hasattr(current_config, 'instance_details'):
+                launch_details = getattr(current_config.instance_details, 'launch_details', None)
+                if launch_details:
+                    current_image_id = getattr(launch_details, 'image_id', None)
+
+            target_image_id = self._resolve_target_image_id(
+                context,
+                instances[0].compartment_id if instances else None,
+                new_image_name,
+                current_image_id,
+            )
+
+            if not target_image_id:
+                result["pool_update"] = WorkRequestResult(
+                    description=f"Cycle instance pool {instance_pool_id}",
+                    status="FAILED",
+                    errors=[f"Unable to resolve image '{new_image_name}'"],
+                )
+                return result
+
+            # Create new instance configuration with updated image
+            new_config_id = self._create_instance_configuration(
+                context, current_config, target_image_id, new_image_name
+            )
+
+            if not new_config_id:
+                result["pool_update"] = WorkRequestResult(
+                    description=f"Cycle instance pool {instance_pool_id}",
+                    status="FAILED",
+                    errors=["Failed to create new instance configuration"],
+                )
+                return result
+
+            result["new_config_id"] = new_config_id
+
+            # Update instance pool to use new configuration
+            update_result = self._update_instance_pool_config(
+                context, instance_pool_id, new_config_id
+            )
+            result["pool_update"] = update_result
+
+            if update_result.status != "SUCCEEDED":
+                return result
+
+            # Detach old instances gradually (pool will auto-create new ones)
+            max_surge = 4  # Match OKE node pool settings
+            for i, instance_plan in enumerate(instances):
+                if i >= max_surge:
+                    # Wait for replacements before detaching more
+                    self.logger.info(
+                        "Detached %d instances, waiting for pool to create replacements...",
+                        i
+                    )
+                    time.sleep(30)  # Give pool time to create new instances
+
+                detach_result = self._detach_instance_from_pool(
+                    context, instance_pool_id, instance_plan
+                )
+                result["instance_results"].append(detach_result)
+
+                if detach_result.status == "SUCCEEDED":
+                    result["detached_count"] += 1
+
+        except oci_exceptions.ServiceError as exc:
+            result["pool_update"] = WorkRequestResult(
+                description=f"Cycle instance pool {instance_pool_id}",
+                status="FAILED",
+                errors=[exc.message],
+            )
+
+        return result
+
+    def _create_instance_configuration(
+        self,
+        context: CompartmentContext,
+        current_config: Any,
+        new_image_id: str,
+        new_image_name: str,
+    ) -> Optional[str]:
+        """Create a new instance configuration based on current config with updated image."""
+        cm_client = self._get_cm_client(context)
+        if not cm_client:
+            return None
+
+        try:
+            # Build new configuration based on current one
+            from oci.core.models import CreateInstanceConfigurationDetails, ComputeInstanceDetails
+
+            # Clone the instance details and update the image
+            instance_details = current_config.instance_details
+            if hasattr(instance_details, 'launch_details'):
+                launch_details = instance_details.launch_details
+                # Update image ID
+                launch_details.image_id = new_image_id
+
+            new_config_name = f"{current_config.display_name or 'config'}-{new_image_name}-{int(time.time())}"
+
+            create_details = CreateInstanceConfigurationDetails(
+                compartment_id=current_config.compartment_id,
+                display_name=new_config_name[:255],  # OCI limit
+                instance_details=instance_details,
+                freeform_tags=current_config.freeform_tags,
+                defined_tags=current_config.defined_tags,
+            )
+
+            response = cm_client.create_instance_configuration(create_details)
+            new_config_id = response.data.id
+
+            self.logger.info(
+                "Created new instance configuration %s with image %s",
+                new_config_id,
+                new_image_name
+            )
+            return new_config_id
+
+        except Exception as exc:
+            self.logger.error("Failed to create instance configuration: %s", exc)
+            self._errors.append(f"Failed to create instance configuration: {exc}")
+            return None
+
+    def _update_instance_pool_config(
+        self,
+        context: CompartmentContext,
+        instance_pool_id: str,
+        new_config_id: str,
+    ) -> WorkRequestResult:
+        """Update instance pool to use new instance configuration."""
+        cm_client = self._get_cm_client(context)
+        if not cm_client:
+            return WorkRequestResult(
+                description=f"Update instance pool {instance_pool_id}",
+                status="FAILED",
+                errors=["No Compute Management client available"],
+            )
+
+        try:
+            from oci.core.models import UpdateInstancePoolDetails
+
+            update_details = UpdateInstancePoolDetails(
+                instance_configuration_id=new_config_id
+            )
+
+            self.logger.info(
+                "Updating instance pool %s to use configuration %s",
+                instance_pool_id,
+                new_config_id
+            )
+
+            response = cm_client.update_instance_pool(instance_pool_id, update_details)
+
+            return WorkRequestResult(
+                description=f"Update instance pool {instance_pool_id}",
+                status="SUCCEEDED",
+            )
+
+        except oci_exceptions.ServiceError as exc:
+            self.logger.error("Failed to update instance pool: %s", exc.message)
+            return WorkRequestResult(
+                description=f"Update instance pool {instance_pool_id}",
+                status="FAILED",
+                errors=[exc.message],
+            )
+
+    def _detach_instance_from_pool(
+        self,
+        context: CompartmentContext,
+        instance_pool_id: str,
+        instance_plan: InstanceRecyclePlan,
+    ) -> WorkRequestResult:
+        """Detach an instance from the pool (pool will create replacement)."""
+        cm_client = self._get_cm_client(context)
+        if not cm_client:
+            return WorkRequestResult(
+                description=f"Detach instance {instance_plan.host_name}",
+                status="FAILED",
+                errors=["No Compute Management client available"],
+            )
+
+        try:
+            self.logger.info(
+                "Detaching instance %s (%s) from pool %s",
+                instance_plan.host_name,
+                instance_plan.instance_id,
+                instance_pool_id
+            )
+
+            response = cm_client.detach_instance_pool_instance(
+                instance_pool_id=instance_pool_id,
+                detach_instance_pool_instance_details={
+                    "instance_id": instance_plan.instance_id,
+                    "is_decrement_size": False,  # Pool will create replacement
+                    "is_auto_terminate": True,  # Terminate the detached instance
+                }
+            )
+
+            return WorkRequestResult(
+                description=f"Detach instance {instance_plan.host_name}",
+                status="SUCCEEDED",
+            )
+
+        except oci_exceptions.ServiceError as exc:
+            self.logger.error(
+                "Failed to detach instance %s: %s",
+                instance_plan.host_name,
+                exc.message
+            )
+            return WorkRequestResult(
+                description=f"Detach instance {instance_plan.host_name}",
+                status="FAILED",
+                errors=[exc.message],
+            )
 
     def _update_node_pool_image(
         self,
@@ -1764,7 +2088,7 @@ class NodePoolRecycler:
         html.append("<head>")
         html.append('<meta charset="utf-8"/>')
         html.append(
-            f"<title>OKE Node Pool Recycle Report - {html_escape(self._timestamp_label or generated_at_display)}</title>"
+            f"<title>Pool Recycle Report (OKE + Instance Pools) - {html_escape(self._timestamp_label or generated_at_display)}</title>"
         )
         html.append(
             "<style>"
@@ -1786,7 +2110,7 @@ class NodePoolRecycler:
         )
         html.append("</head>")
         html.append("<body>")
-        html.append("<h1>OKE Node Pool Recycle Report</h1>")
+        html.append("<h1>Pool Recycle Report (OKE Node Pools + Instance Pools)</h1>")
 
         html.append("<section>")
         html.append("<h2>Run Summary</h2>")
@@ -1877,6 +2201,44 @@ class NodePoolRecycler:
                 html.append("</tr>")
         html.append("</tbody></table>")
         html.append("</section>")
+
+        # Instance Pool section
+        if self._instance_pool_summaries:
+            html.append("<section>")
+            html.append("<h2>Instance Pool Operations</h2>")
+            html.append(
+                "<table><thead><tr>"
+                "<th>Instance Pool ID</th>"
+                "<th>Target Image</th>"
+                "<th>Instances Detached</th>"
+                "<th>New Config ID</th>"
+                "<th>Status</th>"
+                "<th>Post State</th>"
+                "<th>Post Instance Count</th>"
+                "</tr></thead><tbody>"
+            )
+
+            for summary in self._instance_pool_summaries:
+                status = summary.update_result.status if summary.update_result else "UNKNOWN"
+                status_class = f"status-{status}"
+
+                new_config_short = ""
+                if summary.new_instance_config_id:
+                    parts = summary.new_instance_config_id.split(".")
+                    new_config_short = f"...{parts[-1][:12]}" if parts else summary.new_instance_config_id[:15]
+
+                html.append("<tr>")
+                html.append(f"<td><code>{html_escape(summary.instance_pool_id)}</code></td>")
+                html.append(f"<td>{html_escape(summary.target_image)}</td>")
+                html.append(f"<td>{summary.detached_count} / {len(summary.instance_results)}</td>")
+                html.append(f"<td><code>{html_escape(new_config_short)}</code></td>")
+                html.append(f"<td class='{status_class}'>{html_escape(status)}</td>")
+                html.append(f"<td>{html_escape(summary.post_state or '—')}</td>")
+                html.append(f"<td>{summary.post_instance_count}</td>")
+                html.append("</tr>")
+
+            html.append("</tbody></table>")
+            html.append("</section>")
 
         if self._missing_hosts:
             html.append('<section class="skipped">')
