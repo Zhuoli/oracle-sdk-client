@@ -705,13 +705,13 @@ class NodePoolRecycler:
 
     @classmethod
     def _build_update_node_pool_details(
-        cls, image_id: str, max_surge: str = "1", max_unavailable: str = "0"
+        cls, image_id: str, max_surge: str = "4", max_unavailable: str = "0"
     ) -> Any:
         """Build node pool update details with image and node cycling configuration.
 
         Args:
             image_id: The OCID of the new image
-            max_surge: Maximum additional nodes during cycling (default: "1", can be number or percentage like "20%")
+            max_surge: Maximum additional nodes during cycling (default: "4", can be number or percentage like "20%")
             max_unavailable: Maximum unavailable nodes during cycling (default: "0", can be number or percentage)
         """
         node_source_details = cls._build_node_source_details(image_id)
@@ -746,13 +746,13 @@ class NodePoolRecycler:
         eviction_settings = None
         try:
             eviction_settings = NodeEvictionNodePoolSettings(
-                eviction_grace_duration="PT1H",  # 1 hour grace period for workload migration
+                eviction_grace_duration="PT30M",  # 30 minutes grace period for workload migration
                 is_force_delete_after_grace_duration=False,
             )
         except (TypeError, AttributeError):
             # Fallback for older SDK versions
             eviction_settings = {
-                "evictionGraceDuration": "PT1H",
+                "evictionGraceDuration": "PT30M",
                 "isForceDeleteAfterGraceDuration": False,
             }
 
