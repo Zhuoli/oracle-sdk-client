@@ -440,7 +440,16 @@ class NodePoolRecycler:
                 current_image = (raw_row.get(column_map["current image"], "") or "").strip()
                 new_image = (raw_row.get(column_map["new image name"], "") or "").strip()
 
-                if not (host and compartment and new_image):
+                # Skip rows where 'Newer Available Image' is empty or '-' (already using latest image)
+                if not new_image or new_image == "-":
+                    self.logger.debug(
+                        "Skipping row for host=%r - already using latest image (new_image=%r)",
+                        host,
+                        new_image,
+                    )
+                    continue
+
+                if not (host and compartment):
                     self.logger.warning(
                         "Skipping row with missing required data: host=%r compartment=%r new_image=%r",
                         host,
