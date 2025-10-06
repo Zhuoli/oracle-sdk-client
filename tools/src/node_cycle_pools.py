@@ -961,12 +961,11 @@ class NodePoolRecycler:
         self, pool_name: str, compartment_id: str, context: CompartmentContext
     ) -> Optional[Any]:
         """Find an instance pool by display name in the given compartment."""
-        client = self._get_client(context)
-        if not client:
+        compute_mgmt_client = self._get_cm_client(context)
+        if not compute_mgmt_client:
             return None
 
         try:
-            compute_mgmt_client = client.compute_management_client
             pool_name_lower = pool_name.lower()
 
             # List all instance pools in the compartment
@@ -1002,13 +1001,15 @@ class NodePoolRecycler:
         self, pool_id: str, compartment_id: str, context: CompartmentContext
     ) -> List[oci.core.models.Instance]:
         """Get all instances belonging to an instance pool."""
+        compute_mgmt_client = self._get_cm_client(context)
+        if not compute_mgmt_client:
+            return []
+
         client = self._get_client(context)
         if not client:
             return []
 
         try:
-            compute_mgmt_client = client.compute_management_client
-
             # Get instance pool instances
             response = compute_mgmt_client.list_instance_pool_instances(
                 compartment_id=compartment_id,
