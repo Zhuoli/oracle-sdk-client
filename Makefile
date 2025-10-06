@@ -1,8 +1,8 @@
 # Makefile for OCI SSH Sync
-# SSH Configuration Generator for Oracle Cloud Infrastructure
+# SSH Configuration Generator for Oracle Deployment Orchestrator
 # Provides convenient commands for development and SSH config generation
 
-.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod recycle-node-pools
+.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates recycle-node-pools
 
 # Default target
 help:
@@ -15,6 +15,8 @@ help:
 	@echo "SSH Sync Commands:"
 	@echo "  ssh-sync      Generate SSH config for OCI instances"
 	@echo "  ssh-help      Show SSH sync configuration help"
+	@echo "  image-updates Check for newer images for compute instances (by project/stage)"
+	@echo "  recycle-node-pools CSV=<file> [DRY_RUN=1] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)]"
 	@echo ""
 	@echo "Development Commands:"
 	@echo "  test          Run all tests"
@@ -23,9 +25,6 @@ help:
 	@echo "  lint          Run linting with flake8"
 	@echo "  type-check    Run type checking with mypy"
 	@echo "  clean         Clean up temporary files and caches"
-	@echo ""
-	@echo "Production Operations:"
-	@echo "  recycle-node-pools CSV=<file> [DRY_RUN=1] [META=tools/meta.yaml] [CONFIG=~/.oci/config]"
 	@echo ""
 	@echo "SSH Sync Configuration:"
 	@echo "  Uses meta.yaml configuration file for project/stage/region mapping"
@@ -136,6 +135,49 @@ ssh-help:
 	@echo "Output:"
 	@echo "  SSH config file: ssh_config_<project>_<stage>.txt"
 
+# New command: check for newer images per instance
+image-updates:
+	@echo "🔎 Checking for newer images for compute instances..."
+	@echo "Usage: make image-updates PROJECT=<project_name> STAGE=<stage>"
+	@echo "Example: make image-updates PROJECT=remote-observer STAGE=dev"
+	@echo ""
+	@if [ -z "$(PROJECT)" ] || [ -z "$(STAGE)" ]; then \
+		echo "❌ Error: PROJECT and STAGE parameters are required"; \
+		echo ""; \
+		echo "Examples:"; \
+		echo "  make image-updates PROJECT=remote-observer STAGE=dev"; \
+		echo "  make image-updates PROJECT=today-all STAGE=staging"; \
+		exit 1; \
+	fi
+	cd tools && poetry run python src/check_image_updates.py $(PROJECT) $(STAGE)
+
+
+# OKE node pool recycling
+recycle-node-pools:
+	@if [ -z "$(CSV)" ]; then \
+		echo "❌ Error: CSV=<file> is required"; \
+			echo "Usage: make recycle-node-pools CSV=oke_nodes.csv [DRY_RUN=1] [META=tools/meta.yaml] [CONFIG=~/.oci/config]"; \
+		exit 1; \
+	fi
+	@echo "♻️  Recycling OKE node pools from $(CSV)"
+	@DRY_RUN_FLAG=""; \
+	if [ "$(DRY_RUN)" = "1" ] || [ "$(DRY_RUN)" = "true" ] || [ "$(DRY_RUN)" = "TRUE" ] || [ "$(DRY_RUN)" = "yes" ] || [ "$(DRY_RUN)" = "YES" ]; then \
+		DRY_RUN_FLAG="--dry-run"; \
+	fi; \
+	CONFIG_FLAG=""; \
+	if [ -n "$(CONFIG)" ]; then \
+		CONFIG_FLAG="--config-file ../$(CONFIG)"; \
+	fi; \
+	POLL_FLAG=""; \
+	if [ -n "$(POLL_SECONDS)" ]; then \
+		POLL_FLAG="--poll-seconds $(POLL_SECONDS)"; \
+	fi; \
+	META_FLAG=""; \
+	if [ -n "$(META)" ]; then \
+		META_FLAG="--meta-file ../$(META)"; \
+	fi; \
+	cd tools && poetry run python src/recycle_node_pools.py --csv-path "../$(CSV)" $$POLL_FLAG $$CONFIG_FLAG $$META_FLAG $$DRY_RUN_FLAG
+
 # Testing
 test:
 	@echo "🧪 Running tests..."
@@ -179,32 +221,6 @@ clean:
 	find . -name "*~" -delete 2>/dev/null || true
 	find . -name ".coverage" -delete 2>/dev/null || true
 	@echo "✅ Cleanup completed!"
-
-# OKE node pool recycling
-recycle-node-pools:
-	@if [ -z "$(CSV)" ]; then \
-		echo "❌ Error: CSV=<file> is required"; \
-			echo "Usage: make recycle-node-pools CSV=oke_nodes.csv [DRY_RUN=1] [META=tools/meta.yaml] [CONFIG=~/.oci/config]"; \
-		exit 1; \
-	fi
-	@echo "♻️  Recycling OKE node pools from $(CSV)"
-	@DRY_RUN_FLAG=""; \
-	if [ "$(DRY_RUN)" = "1" ] || [ "$(DRY_RUN)" = "true" ] || [ "$(DRY_RUN)" = "TRUE" ] || [ "$(DRY_RUN)" = "yes" ] || [ "$(DRY_RUN)" = "YES" ]; then \
-		DRY_RUN_FLAG="--dry-run"; \
-	fi; \
-	CONFIG_FLAG=""; \
-	if [ -n "$(CONFIG)" ]; then \
-		CONFIG_FLAG="--config-file ../$(CONFIG)"; \
-	fi; \
-	POLL_FLAG=""; \
-	if [ -n "$(POLL_SECONDS)" ]; then \
-		POLL_FLAG="--poll-seconds $(POLL_SECONDS)"; \
-	fi; \
-	META_FLAG=""; \
-	if [ -n "$(META)" ]; then \
-		META_FLAG="--meta-file ../$(META)"; \
-	fi; \
-	cd tools && poetry run python src/recycle_node_pools.py --csv-path "../$(CSV)" $$POLL_FLAG $$CONFIG_FLAG $$META_FLAG $$DRY_RUN_FLAG
 
 # Example environment setup (for documentation)
 setup-example:
