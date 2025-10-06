@@ -118,32 +118,15 @@ def _get_primary_hostname_for_instance(
     instance: oci.core.models.Instance,
 ) -> str:
     """
-    Try to retrieve the primary VNIC's hostname_label; fallback to instance.display_name.
+    Return instance.display_name for consistency with node cycling logic.
+
+    Note: We use display_name instead of hostname_label because:
+    1. hostname_label may have underscores converted to hyphens (DNS restrictions)
+    2. node_cycle_pools.py matches instances by display_name
+    3. This ensures CSV hostname matches what's used for instance lookup
     """
-    try:
-        attachments = oci.pagination.list_call_get_all_results(
-            compute_client.list_vnic_attachments,
-            compartment_id=instance.compartment_id,
-            instance_id=instance.id,
-        ).data
-        vnic_id: Optional[str] = None
-        # Prefer primary attachment if present
-        for att in attachments:
-            if getattr(att, "lifecycle_state", None) == "ATTACHED":
-                vnic_id = att.vnic_id
-                if getattr(att, "nic_index", None) in (None, 0):
-                    break
-        if vnic_id:
-            vnic = network_client.get_vnic(vnic_id).data
-            hostname = getattr(vnic, "hostname_label", None)
-            if hostname:
-                return hostname
-    except Exception:
-        # Non-fatal; we'll fall back below.
-        pass
-    fallback = instance.display_name or instance.id
-    console.print(f"[dim]Using fallback hostname for instance {instance.id}: {fallback}[/dim]")
-    return fallback
+    # Always use display_name to ensure consistency with node cycling
+    return instance.display_name or instance.id
 
 
 def _format_defined_tags(dt: Any) -> str:
