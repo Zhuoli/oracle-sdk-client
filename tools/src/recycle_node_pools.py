@@ -14,6 +14,7 @@ import getpass
 import logging
 import sys
 import time
+import webbrowser
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1175,13 +1176,32 @@ class NodePoolRecycler:
             self.logger.error("Work request %s error: %s", work_request_id, formatted)
         return errors
 
+    def _open_report_in_browser(self) -> None:
+        if not self._report_path:
+            return
+
+        report_path = self._report_path.resolve()
+        try:
+            report_url = report_path.as_uri()
+        except ValueError:
+            report_url = str(report_path)
+
+        try:
+            opened = webbrowser.open_new_tab(report_url)
+        except Exception as exc:  # pragma: no cover - best effort for local operator convenience
+            self.logger.debug("Unable to open report in browser: %s", exc)
+            return
+
+        if opened:
+            self.logger.info("Opened report in default browser: %s", report_path)
+
     def _generate_report(self) -> None:
         "Emit an HTML report summarizing the recycle operation."
         if not self._report_path:
             return
 
         generated_at_dt = datetime.now().astimezone()
-        generated_at = generated_at_dt.isoformat()
+        generated_at_display = generated_at_dt.strftime("%Y-%m-%d %H:%M %Z")
         used_regions = sorted({context[2] for context in self._used_contexts})
         region_value = ", ".join(used_regions) if used_regions else "unknown"
         operator_name = getpass.getuser()
@@ -1201,7 +1221,7 @@ class NodePoolRecycler:
                 return "—"
             if value.tzinfo is None:
                 value = value.replace(tzinfo=timezone.utc)
-            return value.astimezone().isoformat()
+            return value.astimezone().strftime("%Y-%m-%d %H:%M %Z")
 
         html: List[str] = []
         html.append("<!DOCTYPE html>")
@@ -1209,7 +1229,7 @@ class NodePoolRecycler:
         html.append("<head>")
         html.append('<meta charset="utf-8"/>')
         html.append(
-            f"<title>OKE Node Pool Recycle Report - {html_escape(self._timestamp_label or generated_at)}</title>"
+            f"<title>OKE Node Pool Recycle Report - {html_escape(self._timestamp_label or generated_at_display)}</title>"
         )
         html.append(
             "<style>"
@@ -1236,7 +1256,8 @@ class NodePoolRecycler:
         html.append("<section>")
         html.append("<h2>Run Summary</h2>")
         html.append("<ul>")
-        html.append(f"<li><strong>Generated:</strong> {html_escape(generated_at)}</li>")
+        html.append(f"<li><strong>Operator:</strong> {html_escape(operator_name)}</li>")
+        html.append(f"<li><strong>Generated:</strong> {html_escape(generated_at_display)}</li>")
         if self._timestamp_label:
             html.append(
                 f"<li><strong>Run ID:</strong> {html_escape(self._timestamp_label)}</li>"
@@ -1246,9 +1267,6 @@ class NodePoolRecycler:
         config_display = self.config_file if self.config_file else "~/.oci/config (default)"
         html.append(
             f"<li><strong>Config File:</strong> {html_escape(str(config_display))}</li>"
-        )
-        html.append(
-            f"<li><strong>Operator:</strong> {html_escape(operator_name)}</li>"
         )
         html.append(
             f"<li><strong>Regions Evaluated:</strong> {html_escape(region_value)}</li>"
@@ -1345,6 +1363,8 @@ class NodePoolRecycler:
             handle.write("\n".join(html))
 
         self.logger.info("Operation report written to %s", self._report_path)
+
+        self._open_report_in_browser()
 
         self.logger.info(
             "Recycle summary: %d total row(s), %d resolved, %d skipped",
