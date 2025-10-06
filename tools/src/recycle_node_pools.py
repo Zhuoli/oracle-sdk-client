@@ -28,6 +28,11 @@ from oci.container_engine.models import (
     UpdateNodePoolDetails,
     UpdateNodePoolNodeConfigDetails,
 )
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.syntax import Syntax
+import json
 
 try:  # OCI SDK < 2.110.0 does not expose UpdateNodeSourceViaImageDetails
     from oci.container_engine.models import UpdateNodeSourceViaImageDetails as _UpdateNodeSourceViaImageDetails
@@ -138,6 +143,7 @@ class NodePoolRecycler:
         self.poll_seconds = poll_seconds
         self.logger = logging.getLogger(LOGGER_NAME)
         self.logger.setLevel(logging.INFO)
+        self.console = Console()
 
         self.log_dir = log_dir if log_dir else determine_default_log_dir()
 
@@ -1076,6 +1082,101 @@ class NodePoolRecycler:
         return lifecycle_state, image_name, node_states
 
     # ------------------------------------------------------------------
+    # Formatting and display helpers
+    # ------------------------------------------------------------------
+    def _format_update_details(self, details: Any) -> str:
+        """Format UpdateNodePoolDetails object as JSON string for logging."""
+        try:
+            # Try to convert OCI model to dict
+            if hasattr(details, 'swagger_types'):
+                # OCI SDK model object
+                detail_dict = {}
+                for attr in details.swagger_types.keys():
+                    value = getattr(details, attr, None)
+                    if value is not None:
+                        # Recursively handle nested objects
+                        if hasattr(value, 'swagger_types'):
+                            nested_dict = {}
+                            for nested_attr in value.swagger_types.keys():
+                                nested_value = getattr(value, nested_attr, None)
+                                if nested_value is not None:
+                                    nested_dict[nested_attr] = nested_value
+                            detail_dict[attr] = nested_dict
+                        else:
+                            detail_dict[attr] = value
+                return json.dumps(detail_dict, indent=2, default=str)
+            elif isinstance(details, dict):
+                return json.dumps(details, indent=2, default=str)
+            else:
+                return str(details)
+        except Exception as exc:
+            self.logger.warning("Failed to format update details: %s", exc)
+            return str(details)
+
+    def _print_api_request_panel(
+        self, node_pool_id: str, target_image_name: str, details: Any
+    ) -> None:
+        """Print a formatted panel showing the API request details."""
+        details_json = self._format_update_details(details)
+
+        panel_content = f"[bold cyan]Node Pool:[/bold cyan] {node_pool_id}\n"
+        panel_content += f"[bold cyan]Target Image:[/bold cyan] {target_image_name}\n\n"
+        panel_content += "[bold yellow]Update Details (JSON):[/bold yellow]\n"
+
+        self.console.print(Panel(
+            panel_content,
+            title="[bold magenta]API Request Details[/bold magenta]",
+            border_style="cyan"
+        ))
+
+        # Print JSON with syntax highlighting
+        syntax = Syntax(details_json, "json", theme="monokai", line_numbers=True)
+        self.console.print(syntax)
+
+    def _print_work_request_table(
+        self,
+        work_request_id: str,
+        status: str,
+        description: str,
+        accepted_time: Optional[datetime] = None,
+        finished_time: Optional[datetime] = None,
+        duration_seconds: Optional[float] = None,
+        errors: Optional[List[str]] = None,
+    ) -> None:
+        """Print a formatted table showing work request status with colors."""
+        table = Table(title="Work Request Status", show_header=True, header_style="bold magenta")
+        table.add_column("Field", style="cyan", width=20)
+        table.add_column("Value", style="white")
+
+        # Color-code status
+        if status == "SUCCEEDED":
+            status_colored = f"[bold green]{status} ✓[/bold green]"
+            id_colored = f"[green]{work_request_id}[/green]"
+        elif status in ("FAILED", "CANCELED", "ERROR"):
+            status_colored = f"[bold red]{status} ✗[/bold red]"
+            id_colored = f"[red]{work_request_id}[/red]"
+        else:
+            status_colored = f"[bold yellow]{status}[/bold yellow]"
+            id_colored = f"[yellow]{work_request_id}[/yellow]"
+
+        table.add_row("Work Request ID", id_colored)
+        table.add_row("Description", description)
+        table.add_row("Status", status_colored)
+
+        if accepted_time:
+            table.add_row("Accepted", accepted_time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+        if finished_time:
+            table.add_row("Finished", finished_time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+        if duration_seconds is not None:
+            table.add_row("Duration", f"{duration_seconds:.1f}s")
+
+        if errors:
+            error_text = "\n".join(f"• {err}" for err in errors)
+            table.add_row("Errors", f"[red]{error_text}[/red]")
+
+        self.console.print(table)
+
+    # ------------------------------------------------------------------
     # Execution helpers
     # ------------------------------------------------------------------
     def _execute(self, plans: Iterable[NodePoolAction]) -> None:
@@ -1199,7 +1300,15 @@ class NodePoolRecycler:
             node_pool_id,
             target_image_name,
         )
+
+        # Build update details
         details = self._build_update_node_pool_details(target_image_id)
+
+        # Print detailed API request information with colors
+        self.console.print("\n")
+        self._print_api_request_panel(node_pool_id, target_image_name, details)
+        self.console.print("\n")
+
         ce_client = self._get_ce_client(context)
         if not ce_client:
             message = f"No Container Engine client available for region {context.region}"
@@ -1210,22 +1319,50 @@ class NodePoolRecycler:
                 status="FAILED",
                 errors=[message],
             )
+
+        # Highlight the API call execution
+        self.console.print(
+            f"[bold yellow]>>> Executing API Call:[/bold yellow] "
+            f"[bold white]ce_client.update_node_pool[/bold white]"
+            f"([cyan]{node_pool_id}[/cyan], details)",
+            style="on blue"
+        )
+        self.console.print("\n")
+
         try:
             response = ce_client.update_node_pool(node_pool_id, details)
         except oci_exceptions.ServiceError as exc:
             self.logger.error("Failed to update node pool %s: %s", node_pool_id, exc.message)
             self._errors.append(f"Failed to update node pool {node_pool_id}: {exc.message}")
+            self.console.print(
+                f"[bold red]✗ API call failed: {exc.message}[/bold red]\n"
+            )
             return WorkRequestResult(
                 description=f"Update node pool {node_pool_id}",
                 status="FAILED",
                 errors=[exc.message],
             )
 
+        self.console.print("[bold green]✓ API call succeeded[/bold green]\n")
+
         work_request_id = response.headers.get("opc-work-request-id")
         if work_request_id:
             result = self._wait_for_work_request(
                 context, work_request_id, f"Update node pool {node_pool_id}"
             )
+
+            # Print work request result in a colored table
+            self._print_work_request_table(
+                work_request_id=work_request_id,
+                status=result.status,
+                description=result.description,
+                accepted_time=result.accepted_time,
+                finished_time=result.finished_time,
+                duration_seconds=result.duration_seconds,
+                errors=result.errors if result.errors else None,
+            )
+            self.console.print("\n")
+
             if result.status != "SUCCEEDED":
                 self._errors.append(
                     f"Node pool update for {node_pool_id} ended with status {result.status}"
@@ -1235,6 +1372,7 @@ class NodePoolRecycler:
         message = f"Update node pool {node_pool_id} did not return a work request ID"
         self.logger.warning(message)
         self._errors.append(message)
+        self.console.print(f"[bold yellow]⚠ {message}[/bold yellow]\n")
         return WorkRequestResult(
             description=f"Update node pool {node_pool_id}",
             status="UNKNOWN",
