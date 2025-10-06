@@ -724,30 +724,85 @@ class NodePoolRecycler:
         host_key = host_name.lower()
         base_host_key = host_key.split(".")[0]
 
+        self.logger.debug(
+            "Looking for instance with host_name='%s' (base='%s') in compartment %s, region %s",
+            host_name, base_host_key, compartment_id, context.region
+        )
+
         matches: List[oci.core.models.Instance] = []
         instances = self._instances_for_compartment(context, compartment_id)
+
+        self.logger.debug("Found %d total instances in compartment", len(instances))
+
+        active_count = 0
+        inactive_states = []
+
         for instance in instances:
             if instance.lifecycle_state not in ACTIVE_INSTANCE_STATES:
+                inactive_states.append((
+                    getattr(instance, "display_name", "unknown"),
+                    instance.lifecycle_state,
+                    instance.id
+                ))
                 continue
 
+            active_count += 1
             instance_names = self._candidate_names(instance)
+
+            # Detailed logging for each active instance
+            self.logger.debug(
+                "Instance %d: display_name='%s', id='%s', state='%s', candidate_names=%s",
+                active_count,
+                getattr(instance, "display_name", "N/A"),
+                instance.id[-12:],
+                instance.lifecycle_state,
+                instance_names
+            )
+
             if host_key in instance_names or base_host_key in instance_names:
                 matches.append(instance)
+                self.logger.debug(
+                    "✓ MATCH FOUND: Instance '%s' matches search key",
+                    getattr(instance, "display_name", instance.id)
+                )
+
+        # Log summary
+        self.logger.info(
+            "Instance search for '%s': %d active instances checked, %d matches found",
+            host_name, active_count, len(matches)
+        )
+
+        if inactive_states:
+            self.logger.debug(
+                "Skipped %d inactive instances: %s",
+                len(inactive_states),
+                ", ".join(f"{name}({state})" for name, state, _ in inactive_states[:5])
+            )
 
         if not matches:
             self.logger.warning(
-                "No matching compute instance for host '%s' in compartment %s",
+                "No matching compute instance for host '%s' in compartment %s (searched %d active instances)",
                 host_name,
                 compartment_id,
+                active_count
             )
+            # Log what we were looking for vs what we found
+            if active_count > 0:
+                self.logger.warning(
+                    "Search keys were: '%s' or '%s'. Try checking if hostname in CSV matches instance display_name/hostname in OCI.",
+                    host_key, base_host_key
+                )
             return None
+
         if len(matches) > 1:
             self.logger.warning(
-                "Multiple compute instances matched host '%s' in compartment %s; skipping",
+                "Multiple compute instances matched host '%s' in compartment %s; skipping. Matched: %s",
                 host_name,
                 compartment_id,
+                ", ".join(getattr(m, "display_name", m.id) for m in matches)
             )
             return None
+
         return matches[0]
 
     def _instances_for_compartment(
@@ -775,9 +830,10 @@ class NodePoolRecycler:
             )
         return self._instance_cache[cache_key]
 
-    @staticmethod
-    def _candidate_names(instance: oci.core.models.Instance) -> List[str]:
+    def _candidate_names(self, instance: oci.core.models.Instance) -> List[str]:
+        """Extract all possible name variations from an instance for matching."""
         names: List[str] = []
+
         display_name = getattr(instance, "display_name", None)
         if display_name:
             names.append(str(display_name).lower())
@@ -795,6 +851,7 @@ class NodePoolRecycler:
         fqdn = getattr(instance, "fqdn", None)
         if fqdn:
             names.append(str(fqdn).lower())
+
         return names
 
     def _extract_node_pool_id(self, instance: oci.core.models.Instance) -> Optional[str]:
