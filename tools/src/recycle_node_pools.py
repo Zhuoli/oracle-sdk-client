@@ -521,16 +521,43 @@ class NodePoolRecycler:
             instance = self._find_instance(
                 instruction.host_name, instruction.compartment_id, context
             )
+
+            # If instance not found by hostname, check if hostname is actually an instance pool name
+            if not instance:
+                self.logger.debug(
+                    "Instance not found by hostname '%s', checking if it's an instance pool name",
+                    instruction.host_name
+                )
+                instance_pool = self._find_instance_pool_by_name(
+                    instruction.host_name, instruction.compartment_id, context
+                )
+                if instance_pool:
+                    self.logger.info(
+                        "Found instance pool '%s' (id=%s), getting instances from pool",
+                        instance_pool.display_name,
+                        instance_pool.id[-12:]
+                    )
+                    # Get any instance from the pool to extract pool ID
+                    pool_instances = self._get_instance_pool_instances(
+                        instance_pool.id, instruction.compartment_id, context
+                    )
+                    if pool_instances:
+                        instance = pool_instances[0]
+                        self.logger.info(
+                            "Using instance '%s' from pool to process cycling",
+                            getattr(instance, "display_name", instance.id[-12:])
+                        )
+
             if not instance:
                 self._missing_hosts.append(
                     (
                         instruction.host_name,
                         instruction.compartment_id,
-                        "No active compute instance found",
+                        "No active compute instance or instance pool found",
                     )
                 )
                 self.logger.warning(
-                    "Skipping host '%s' (compartment %s) because no active compute instance was found",
+                    "Skipping host '%s' (compartment %s) because no active compute instance or instance pool was found",
                     instruction.host_name,
                     instruction.compartment_id,
                 )
@@ -918,6 +945,101 @@ class NodePoolRecycler:
                     return value
 
         return None
+
+    def _find_instance_pool_by_name(
+        self, pool_name: str, compartment_id: str, context: CompartmentContext
+    ) -> Optional[Any]:
+        """Find an instance pool by display name in the given compartment."""
+        client = self._get_client(context)
+        if not client:
+            return None
+
+        try:
+            compute_mgmt_client = client.compute_management_client
+            pool_name_lower = pool_name.lower()
+
+            # List all instance pools in the compartment
+            response = compute_mgmt_client.list_instance_pools(compartment_id=compartment_id)
+            pools = response.data
+
+            # Find pool by display name (case-insensitive)
+            for pool in pools:
+                if pool.display_name and pool.display_name.lower() == pool_name_lower:
+                    self.logger.debug(
+                        "Found instance pool: display_name='%s', id='%s', state='%s'",
+                        pool.display_name,
+                        pool.id[-12:],
+                        pool.lifecycle_state
+                    )
+                    return pool
+
+            self.logger.debug(
+                "No instance pool found with name '%s' in compartment %s",
+                pool_name,
+                compartment_id
+            )
+            return None
+        except Exception as e:
+            self.logger.warning(
+                "Error searching for instance pool '%s': %s",
+                pool_name,
+                str(e)
+            )
+            return None
+
+    def _get_instance_pool_instances(
+        self, pool_id: str, compartment_id: str, context: CompartmentContext
+    ) -> List[oci.core.models.Instance]:
+        """Get all instances belonging to an instance pool."""
+        client = self._get_client(context)
+        if not client:
+            return []
+
+        try:
+            compute_mgmt_client = client.compute_management_client
+
+            # Get instance pool instances
+            response = compute_mgmt_client.list_instance_pool_instances(
+                compartment_id=compartment_id,
+                instance_pool_id=pool_id
+            )
+
+            # Extract instance IDs
+            instance_ids = [inst.id for inst in response.data if inst.id]
+
+            if not instance_ids:
+                self.logger.debug("No instances found in pool %s", pool_id[-12:])
+                return []
+
+            # Fetch full instance details
+            compute_client = client.compute_client
+            instances = []
+            for instance_id in instance_ids:
+                try:
+                    inst_response = compute_client.get_instance(instance_id)
+                    instance = inst_response.data
+                    if instance.lifecycle_state in ACTIVE_INSTANCE_STATES:
+                        instances.append(instance)
+                except Exception as e:
+                    self.logger.warning(
+                        "Error fetching instance %s: %s",
+                        instance_id[-12:],
+                        str(e)
+                    )
+
+            self.logger.debug(
+                "Found %d active instances in pool %s",
+                len(instances),
+                pool_id[-12:]
+            )
+            return instances
+        except Exception as e:
+            self.logger.warning(
+                "Error getting instances for pool %s: %s",
+                pool_id[-12:] if pool_id else "unknown",
+                str(e)
+            )
+            return []
 
     @staticmethod
     def _extract_node_pool_image_id(
