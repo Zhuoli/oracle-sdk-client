@@ -676,6 +676,47 @@ class NodePoolRecycler:
             "image_id": image_id,
         }
 
+    @staticmethod
+    def _to_camel_case(value: str) -> str:
+        parts = value.split("_")
+        if not parts:
+            return value
+        return parts[0] + "".join(part.title() for part in parts[1:])
+
+    @classmethod
+    def _instantiate_model(cls, model_cls: Any, field_name: str, field_value: Any) -> Optional[Any]:
+        for key in (field_name, cls._to_camel_case(field_name)):
+            try:
+                return model_cls(**{key: field_value})
+            except TypeError:
+                continue
+        return None
+
+    @classmethod
+    def _build_update_node_pool_details(cls, image_id: str) -> Any:
+        node_source_details = cls._build_node_source_details(image_id)
+        node_config = cls._instantiate_model(
+            UpdateNodePoolNodeConfigDetails,
+            "node_source_details",
+            node_source_details,
+        )
+        if node_config is None:
+            node_config = {
+                cls._to_camel_case("node_source_details"): node_source_details,
+            }
+
+        details = cls._instantiate_model(
+            UpdateNodePoolDetails,
+            "node_config_details",
+            node_config,
+        )
+        if details is None:
+            details = {
+                cls._to_camel_case("node_config_details"): node_config,
+            }
+
+        return details
+
     # --- Image metadata helpers -------------------------------------------------
 
     @staticmethod
@@ -1104,11 +1145,7 @@ class NodePoolRecycler:
             node_pool_id,
             target_image_name,
         )
-        details = UpdateNodePoolDetails(
-            node_config_details=UpdateNodePoolNodeConfigDetails(
-                node_source_details=self._build_node_source_details(target_image_id)
-            )
-        )
+        details = self._build_update_node_pool_details(target_image_id)
         ce_client = self._get_ce_client(context)
         if not ce_client:
             message = f"No Container Engine client available for region {context.region}"
