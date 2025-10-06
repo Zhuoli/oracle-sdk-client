@@ -1291,9 +1291,9 @@ class NodePoolRecycler:
                 )
 
             work_request = response.data
-            status = work_request.status
-            operation = work_request.operation_type
-            percent = work_request.percent_complete
+            status = getattr(work_request, "status", "UNKNOWN")
+            operation = getattr(work_request, "operation_type", "UNKNOWN")
+            percent = getattr(work_request, "percent_complete", None)
             self.logger.info(
                 "Work request %s status=%s operation=%s percent=%s",
                 work_request_id,
