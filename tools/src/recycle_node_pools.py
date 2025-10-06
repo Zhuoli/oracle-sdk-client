@@ -27,7 +27,6 @@ from oci.container_engine.models import (
     NodeEvictionNodePoolSettings,
     NodePoolCyclingDetails,
     UpdateNodePoolDetails,
-    UpdateNodePoolNodeConfigDetails,
 )
 from rich.console import Console
 from rich.table import Table
@@ -714,16 +713,8 @@ class NodePoolRecycler:
             max_surge: Maximum additional nodes during cycling (default: "4", can be number or percentage like "20%")
             max_unavailable: Maximum unavailable nodes during cycling (default: "0", can be number or percentage)
         """
+        # Build node source details with the new image
         node_source_details = cls._build_node_source_details(image_id)
-        node_config = cls._instantiate_model(
-            UpdateNodePoolNodeConfigDetails,
-            "node_source_details",
-            node_source_details,
-        )
-        if node_config is None:
-            node_config = {
-                cls._to_camel_case("node_source_details"): node_source_details,
-            }
 
         # Add node cycling configuration to enable automatic cycling
         # This is the KEY parameter that triggers node cycling
@@ -757,17 +748,19 @@ class NodePoolRecycler:
             }
 
         # Build the complete update details
+        # IMPORTANT: node_source_details goes directly in UpdateNodePoolDetails,
+        # NOT inside node_config_details!
         details = None
         try:
             details = UpdateNodePoolDetails(
-                node_config_details=node_config,
+                node_source_details=node_source_details,
                 node_pool_cycling_details=cycling_details,
                 node_eviction_node_pool_settings=eviction_settings,
             )
         except (TypeError, AttributeError):
             # Fallback to dict for older SDK versions
             details = {
-                cls._to_camel_case("node_config_details"): node_config,
+                cls._to_camel_case("node_source_details"): node_source_details,
                 cls._to_camel_case("node_pool_cycling_details"): cycling_details,
                 cls._to_camel_case("node_eviction_node_pool_settings"): eviction_settings,
             }
@@ -1098,31 +1091,30 @@ class NodePoolRecycler:
     # ------------------------------------------------------------------
     # Formatting and display helpers
     # ------------------------------------------------------------------
+    def _oci_model_to_dict(self, obj: Any) -> Any:
+        """Recursively convert OCI SDK model objects to dictionaries."""
+        if obj is None:
+            return None
+        elif hasattr(obj, 'swagger_types'):
+            # OCI SDK model object - convert recursively
+            result = {}
+            for attr in obj.swagger_types.keys():
+                value = getattr(obj, attr, None)
+                if value is not None:
+                    result[attr] = self._oci_model_to_dict(value)
+            return result
+        elif isinstance(obj, list):
+            return [self._oci_model_to_dict(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {k: self._oci_model_to_dict(v) for k, v in obj.items()}
+        else:
+            return obj
+
     def _format_update_details(self, details: Any) -> str:
         """Format UpdateNodePoolDetails object as JSON string for logging."""
         try:
-            # Try to convert OCI model to dict
-            if hasattr(details, 'swagger_types'):
-                # OCI SDK model object
-                detail_dict = {}
-                for attr in details.swagger_types.keys():
-                    value = getattr(details, attr, None)
-                    if value is not None:
-                        # Recursively handle nested objects
-                        if hasattr(value, 'swagger_types'):
-                            nested_dict = {}
-                            for nested_attr in value.swagger_types.keys():
-                                nested_value = getattr(value, nested_attr, None)
-                                if nested_value is not None:
-                                    nested_dict[nested_attr] = nested_value
-                            detail_dict[attr] = nested_dict
-                        else:
-                            detail_dict[attr] = value
-                return json.dumps(detail_dict, indent=2, default=str)
-            elif isinstance(details, dict):
-                return json.dumps(details, indent=2, default=str)
-            else:
-                return str(details)
+            detail_dict = self._oci_model_to_dict(details)
+            return json.dumps(detail_dict, indent=2, default=str)
         except Exception as exc:
             self.logger.warning("Failed to format update details: %s", exc)
             return str(details)
