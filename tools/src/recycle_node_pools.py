@@ -1,9 +1,13 @@
-"""OCI OKE node pool recycling utility.
+"""OCI node pool and instance pool recycling utility.
 
 Reads a CSV file describing compute hosts slated for operating system patching,
-identifies their backing node pools using the same meta.yaml mapping as
-``ssh_sync``, and performs an automated recycle with logging suitable for
-production change records.
+identifies their backing pools (OKE node pools or compute instance pools) using
+the same meta.yaml mapping as ``ssh_sync``, and performs an automated recycle
+with logging suitable for production change records.
+
+Supports:
+- OKE Node Pools: Automatic node cycling via pool-level update
+- Instance Pools: Update instance configuration + rolling detach/attach
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from oci.container_engine.models import (
     NodePoolCyclingDetails,
     UpdateNodePoolDetails,
 )
+from oci.core import ComputeManagementClient
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -94,6 +99,26 @@ class NodePoolAction:
 
 
 @dataclass
+class InstanceRecyclePlan:
+    host_name: str
+    compartment_id: str
+    instance_id: str
+    instance_pool_id: str
+    current_image: str
+    resolved_image_name: Optional[str]
+    new_image_name: str
+    context: "CompartmentContext"
+
+
+@dataclass
+class InstancePoolAction:
+    instance_pool_id: str
+    new_image_name: str
+    instances: List[InstanceRecyclePlan]
+    context: "CompartmentContext"
+
+
+@dataclass
 class WorkRequestResult:
     description: str
     status: str
@@ -118,6 +143,24 @@ class NodePoolSummary:
     post_state: Optional[str] = None
     post_image_name: Optional[str] = None
     post_node_states: List[Tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class InstancePoolSummary:
+    instance_pool_id: str
+    target_image: str
+    context: "CompartmentContext"
+    compartment_id: Optional[str] = None
+    original_image_name: Optional[str] = None
+    original_image_id: Optional[str] = None
+    original_instance_config_id: Optional[str] = None
+    new_instance_config_id: Optional[str] = None
+    target_image_id: Optional[str] = None
+    update_result: Optional[WorkRequestResult] = None
+    instance_results: List[WorkRequestResult] = field(default_factory=list)
+    post_state: Optional[str] = None
+    post_instance_count: int = 0
+    detached_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -159,12 +202,14 @@ class NodePoolRecycler:
         ] = {}
         self._errors: List[str] = []
         self._summaries: List[NodePoolSummary] = []
+        self._instance_pool_summaries: List[InstancePoolSummary] = []
         self._timestamp_label: Optional[str] = None
         self._log_path: Optional[Path] = None
         self._report_path: Optional[Path] = None
         # Reuse ssh_sync session helpers so production auth flows remain consistent.
         self._session_clients: Dict[Tuple[str, str, str], "OCIClient"] = {}
         self._ce_clients: Dict[Tuple[str, str, str], ContainerEngineClient] = {}
+        self._cm_clients: Dict[Tuple[str, str, str], ComputeManagementClient] = {}
         self._used_contexts: Set[Tuple[str, str, str]] = set()
 
         self._configure_logging()
@@ -183,13 +228,13 @@ class NodePoolRecycler:
             self.logger.error("No actionable rows found in %s", self.csv_path)
             return 1
 
-        plans = self._build_plans(instructions)
-        if not plans:
-            self.logger.error("Unable to resolve any node pools from provided CSV")
+        node_pool_plans, instance_pool_plans = self._build_plans(instructions)
+        if not node_pool_plans and not instance_pool_plans:
+            self.logger.error("Unable to resolve any pools from provided CSV")
             return 1
 
         # End-to-end execution: act, wait for OCI to settle, then emit human-readable artifacts.
-        self._execute(plans)
+        self._execute(node_pool_plans, instance_pool_plans)
         self._generate_report()
 
         if self._errors:
@@ -198,7 +243,7 @@ class NodePoolRecycler:
                 self.logger.error(issue)
             return 1
 
-        self.logger.info("All requested node pool recycle operations completed successfully")
+        self.logger.info("All requested pool recycle operations completed successfully")
         return 0
 
     # ------------------------------------------------------------------
@@ -333,6 +378,24 @@ class NodePoolRecycler:
         self._ce_clients[key] = ce_client
         return ce_client
 
+    def _get_cm_client(self, context: CompartmentContext) -> Optional[ComputeManagementClient]:
+        """Create or reuse an OCI Compute Management client for the supplied context."""
+        key = self._context_key(context)
+        if key in self._cm_clients:
+            return self._cm_clients[key]
+
+        client = self._get_client(context)
+        if not client:
+            return None
+
+        cm_client = ComputeManagementClient(
+            client.oci_config,
+            signer=client.signer,
+            retry_strategy=client.retry_strategy,
+        )
+        self._cm_clients[key] = cm_client
+        return cm_client
+
     # ------------------------------------------------------------------
     # CSV ingestion and plan building
     # ------------------------------------------------------------------
@@ -427,9 +490,17 @@ class NodePoolRecycler:
 
         return mapping
 
-    def _build_plans(self, instructions: Iterable[CsvInstruction]) -> List[NodePoolAction]:
-        """Group CSV instructions by node pool after resolving their compartment context."""
-        plans: Dict[Tuple[str, str, str, str], NodePoolAction] = {}
+    def _build_plans(
+        self, instructions: Iterable[CsvInstruction]
+    ) -> Tuple[List[NodePoolAction], List[InstancePoolAction]]:
+        """Group CSV instructions by pool type (OKE node pool or instance pool).
+
+        Returns:
+            Tuple of (node_pool_actions, instance_pool_actions)
+        """
+        node_pool_plans: Dict[Tuple[str, str, str, str], NodePoolAction] = {}
+        instance_pool_plans: Dict[Tuple[str, str, str, str], InstancePoolAction] = {}
+
         for instruction in instructions:
             context = self._compartment_lookup.get(instruction.compartment_id)
             if not context:
@@ -458,88 +529,183 @@ class NodePoolRecycler:
                 )
                 continue
 
+            # Check if instance belongs to OKE node pool
             node_pool_id = self._extract_node_pool_id(instance)
-            if not node_pool_id:
-                self._missing_hosts.append(
-                    (
-                        instruction.host_name,
-                        instruction.compartment_id,
-                        "Missing OKE node pool metadata",
-                    )
-                )
-                self.logger.warning(
-                    "Skipping host '%s' because no OKE node pool metadata was found",
-                    instruction.host_name,
+            if node_pool_id:
+                self._process_node_pool_instance(
+                    instruction, instance, node_pool_id, context, node_pool_plans
                 )
                 continue
 
-            resolved_image = self._resolve_image_name(context, instance)
-            if (
-                instruction.current_image
-                and resolved_image
-                and instruction.current_image.strip().lower() != resolved_image.strip().lower()
-            ):
-                # Flag drift early so the runbook reflects what is actually running before recycle.
-                self.logger.warning(
-                    "Image mismatch for host %s: CSV=%s actual=%s",
-                    instruction.host_name,
-                    instruction.current_image,
-                    resolved_image,
+            # Check if instance belongs to compute instance pool
+            instance_pool_id = self._extract_instance_pool_id(instance)
+            if instance_pool_id:
+                self._process_instance_pool_instance(
+                    instruction, instance, instance_pool_id, context, instance_pool_plans
                 )
+                continue
 
-            plan_entry = NodeRecyclePlan(
-                host_name=instruction.host_name,
-                compartment_id=instruction.compartment_id,
-                instance_id=instance.id,
-                node_pool_id=node_pool_id,
-                current_image=instruction.current_image,
-                resolved_image_name=resolved_image,
-                new_image_name=instruction.new_image_name,
-                context=context,
+            # Instance doesn't belong to any pool
+            self._missing_hosts.append(
+                (
+                    instruction.host_name,
+                    instruction.compartment_id,
+                    "Not part of OKE node pool or instance pool",
+                )
+            )
+            self.logger.warning(
+                "Skipping host '%s' because it's not part of any pool",
+                instruction.host_name,
             )
 
-            key = (*self._context_key(context), node_pool_id)
-            if key not in plans:
-                plans[key] = NodePoolAction(
-                    node_pool_id=node_pool_id,
-                    new_image_name=instruction.new_image_name,
-                    nodes=[plan_entry],
-                    context=context,
-                )
-                self._used_contexts.add(self._context_key(context))
-            else:
-                action = plans[key]
-                if action.context != context:
-                    self._errors.append(
-                        "Conflicting compartment context detected for node pool {node_pool}".format(
-                            node_pool=node_pool_id
-                        )
-                    )
-                    continue
-                if (
-                    action.new_image_name.strip().lower()
-                    != instruction.new_image_name.strip().lower()
-                ):
-                    # Mixing target images inside the same pool is a misconfiguration we cannot recover from.
-                    self._errors.append(
-                        "Conflicting target images for node pool {node_pool}: {existing} vs {incoming}".format(
-                            node_pool=node_pool_id,
-                            existing=action.new_image_name,
-                            incoming=instruction.new_image_name,
-                        )
-                    )
-                    continue
-                action.nodes.append(plan_entry)
+        node_pool_list = [action for action in node_pool_plans.values() if action.nodes]
+        instance_pool_list = [action for action in instance_pool_plans.values() if action.instances]
 
-            self._resolved_rows += 1
-
-        filtered = [action for action in plans.values() if action.nodes]
         self.logger.info(
-            "Prepared recycle plan covering %d node pool(s) and %d node(s)",
-            len(filtered),
-            sum(len(action.nodes) for action in filtered),
+            "Prepared recycle plan: %d OKE node pool(s) with %d node(s), "
+            "%d instance pool(s) with %d instance(s)",
+            len(node_pool_list),
+            sum(len(action.nodes) for action in node_pool_list),
+            len(instance_pool_list),
+            sum(len(action.instances) for action in instance_pool_list),
         )
-        return filtered
+        return node_pool_list, instance_pool_list
+
+    def _process_node_pool_instance(
+        self,
+        instruction: CsvInstruction,
+        instance: oci.core.models.Instance,
+        node_pool_id: str,
+        context: CompartmentContext,
+        plans: Dict[Tuple[str, str, str, str], NodePoolAction],
+    ) -> None:
+        """Process an instance that belongs to an OKE node pool."""
+        resolved_image = self._resolve_image_name(context, instance)
+        if (
+            instruction.current_image
+            and resolved_image
+            and instruction.current_image.strip().lower() != resolved_image.strip().lower()
+        ):
+            # Flag drift early so the runbook reflects what is actually running before recycle.
+            self.logger.warning(
+                "Image mismatch for host %s: CSV=%s actual=%s",
+                instruction.host_name,
+                instruction.current_image,
+                resolved_image,
+            )
+
+        plan_entry = NodeRecyclePlan(
+            host_name=instruction.host_name,
+            compartment_id=instruction.compartment_id,
+            instance_id=instance.id,
+            node_pool_id=node_pool_id,
+            current_image=instruction.current_image,
+            resolved_image_name=resolved_image,
+            new_image_name=instruction.new_image_name,
+            context=context,
+        )
+
+        key = (*self._context_key(context), node_pool_id)
+        if key not in plans:
+            plans[key] = NodePoolAction(
+                node_pool_id=node_pool_id,
+                new_image_name=instruction.new_image_name,
+                nodes=[plan_entry],
+                context=context,
+            )
+            self._used_contexts.add(self._context_key(context))
+        else:
+            action = plans[key]
+            if action.context != context:
+                self._errors.append(
+                    "Conflicting compartment context detected for node pool {node_pool}".format(
+                        node_pool=node_pool_id
+                    )
+                )
+                return
+            if (
+                action.new_image_name.strip().lower()
+                != instruction.new_image_name.strip().lower()
+            ):
+                # Mixing target images inside the same pool is a misconfiguration we cannot recover from.
+                self._errors.append(
+                    "Conflicting target images for node pool {node_pool}: {existing} vs {incoming}".format(
+                        node_pool=node_pool_id,
+                        existing=action.new_image_name,
+                        incoming=instruction.new_image_name,
+                    )
+                )
+                return
+            action.nodes.append(plan_entry)
+
+        self._resolved_rows += 1
+
+    def _process_instance_pool_instance(
+        self,
+        instruction: CsvInstruction,
+        instance: oci.core.models.Instance,
+        instance_pool_id: str,
+        context: CompartmentContext,
+        plans: Dict[Tuple[str, str, str, str], InstancePoolAction],
+    ) -> None:
+        """Process an instance that belongs to a compute instance pool."""
+        resolved_image = self._resolve_image_name(context, instance)
+        if (
+            instruction.current_image
+            and resolved_image
+            and instruction.current_image.strip().lower() != resolved_image.strip().lower()
+        ):
+            self.logger.warning(
+                "Image mismatch for host %s: CSV=%s actual=%s",
+                instruction.host_name,
+                instruction.current_image,
+                resolved_image,
+            )
+
+        plan_entry = InstanceRecyclePlan(
+            host_name=instruction.host_name,
+            compartment_id=instruction.compartment_id,
+            instance_id=instance.id,
+            instance_pool_id=instance_pool_id,
+            current_image=instruction.current_image,
+            resolved_image_name=resolved_image,
+            new_image_name=instruction.new_image_name,
+            context=context,
+        )
+
+        key = (*self._context_key(context), instance_pool_id)
+        if key not in plans:
+            plans[key] = InstancePoolAction(
+                instance_pool_id=instance_pool_id,
+                new_image_name=instruction.new_image_name,
+                instances=[plan_entry],
+                context=context,
+            )
+            self._used_contexts.add(self._context_key(context))
+        else:
+            action = plans[key]
+            if action.context != context:
+                self._errors.append(
+                    "Conflicting compartment context detected for instance pool {pool}".format(
+                        pool=instance_pool_id
+                    )
+                )
+                return
+            if (
+                action.new_image_name.strip().lower()
+                != instruction.new_image_name.strip().lower()
+            ):
+                self._errors.append(
+                    "Conflicting target images for instance pool {pool}: {existing} vs {incoming}".format(
+                        pool=instance_pool_id,
+                        existing=action.new_image_name,
+                        incoming=instruction.new_image_name,
+                    )
+                )
+                return
+            action.instances.append(plan_entry)
+
+        self._resolved_rows += 1
 
     # ------------------------------------------------------------------
     # Instance/node pool resolution helpers
@@ -625,6 +791,7 @@ class NodePoolRecycler:
         return names
 
     def _extract_node_pool_id(self, instance: oci.core.models.Instance) -> Optional[str]:
+        """Extract OKE node pool ID from instance metadata/tags."""
         metadata_sources: List[Dict[str, str]] = []
         if instance.metadata:
             metadata_sources.append(instance.metadata)
@@ -650,6 +817,40 @@ class NodePoolRecycler:
         for source in tag_sources:
             for value in source.values():
                 if isinstance(value, str) and "nodepool" in value.lower():
+                    return value
+
+        return None
+
+    def _extract_instance_pool_id(self, instance: oci.core.models.Instance) -> Optional[str]:
+        """Extract compute instance pool ID from instance metadata/tags."""
+        # Check metadata sources
+        metadata_sources: List[Dict[str, str]] = []
+        if instance.metadata:
+            metadata_sources.append(instance.metadata)
+        if instance.extended_metadata:
+            metadata_sources.append(instance.extended_metadata)
+
+        for source in metadata_sources:
+            for key, value in source.items():
+                if not isinstance(value, str):
+                    continue
+                lowered = value.lower()
+                # Look for instance pool OCID pattern
+                if "instancepool" in lowered and "ocid1.instancepool" in lowered:
+                    return value
+
+        # Check tags
+        tag_sources: List[Dict[str, str]] = []
+        if instance.freeform_tags:
+            tag_sources.append(instance.freeform_tags)
+        if instance.defined_tags:
+            for namespace in instance.defined_tags.values():
+                if isinstance(namespace, dict):
+                    tag_sources.append(namespace)
+
+        for source in tag_sources:
+            for value in source.values():
+                if isinstance(value, str) and "ocid1.instancepool" in value.lower():
                     return value
 
         return None
