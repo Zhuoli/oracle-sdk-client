@@ -16,16 +16,26 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import oci
 from oci import exceptions as oci_exceptions
 from oci.container_engine import ContainerEngineClient
-from oci.container_engine.models import (
-    UpdateNodePoolDetails,
-    UpdateNodePoolNodeConfigDetails,
-    UpdateNodeSourceViaImageDetails,
-)
+from oci.container_engine.models import UpdateNodePoolDetails, UpdateNodePoolNodeConfigDetails
+
+try:  # OCI SDK < 2.110.0 does not expose UpdateNodeSourceViaImageDetails
+    from oci.container_engine.models import UpdateNodeSourceViaImageDetails as _UpdateNodeSourceViaImageDetails
+except ImportError:  # pragma: no cover - defensive fallback for older SDKs
+    _UpdateNodeSourceViaImageDetails = None
+    try:
+        from oci.container_engine.models import NodeSourceViaImageDetails as _NodeSourceViaImageDetails
+    except ImportError:  # pragma: no cover - very old SDKs fallback to dict payloads
+        _NodeSourceViaImageDetails = None
+else:  # pragma: no cover - keep name defined for downstream logic
+    _NodeSourceViaImageDetails = None
+
+UpdateNodeSourceViaImageDetails = _UpdateNodeSourceViaImageDetails  # type: ignore[assignment]
+NodeSourceViaImageDetails = _NodeSourceViaImageDetails  # type: ignore[assignment]
 from oci.pagination import list_call_get_all_results
 import yaml
 
@@ -648,6 +658,22 @@ class NodePoolRecycler:
             return getattr(source_details, "image_id", None)
         return None
 
+    @staticmethod
+    def _build_node_source_details(image_id: str) -> Any:
+        """Return an OCI-compliant payload for updating node source image."""
+
+        if UpdateNodeSourceViaImageDetails is not None:
+            return UpdateNodeSourceViaImageDetails(image_id=image_id)
+
+        if NodeSourceViaImageDetails is not None:
+            return NodeSourceViaImageDetails(image_id=image_id)  # type: ignore[call-arg]
+
+        return {
+            "model_type": "NODE_SOURCE_VIA_IMAGE_DETAILS",
+            "source_type": "IMAGE",
+            "image_id": image_id,
+        }
+
     def _resolve_image_name(
         self, context: CompartmentContext, instance: oci.core.models.Instance
     ) -> Optional[str]:
@@ -910,7 +936,7 @@ class NodePoolRecycler:
         )
         details = UpdateNodePoolDetails(
             node_config_details=UpdateNodePoolNodeConfigDetails(
-                node_source_details=UpdateNodeSourceViaImageDetails(image_id=target_image_id)
+                node_source_details=self._build_node_source_details(target_image_id)
             )
         )
         ce_client = self._get_ce_client(context)
