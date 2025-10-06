@@ -25,6 +25,7 @@ from oci import exceptions as oci_exceptions
 from oci.container_engine import ContainerEngineClient
 from oci.container_engine.models import (
     NodeEvictionNodePoolSettings,
+    NodePoolCyclingDetails,
     UpdateNodePoolDetails,
     UpdateNodePoolNodeConfigDetails,
 )
@@ -704,14 +705,14 @@ class NodePoolRecycler:
 
     @classmethod
     def _build_update_node_pool_details(
-        cls, image_id: str, max_surge: int = 1, max_unavailable: int = 0
+        cls, image_id: str, max_surge: str = "1", max_unavailable: str = "0"
     ) -> Any:
         """Build node pool update details with image and node cycling configuration.
 
         Args:
             image_id: The OCID of the new image
-            max_surge: Maximum number of additional nodes during cycling (default: 1)
-            max_unavailable: Maximum number of unavailable nodes during cycling (default: 0)
+            max_surge: Maximum additional nodes during cycling (default: "1", can be number or percentage like "20%")
+            max_unavailable: Maximum unavailable nodes during cycling (default: "0", can be number or percentage)
         """
         node_source_details = cls._build_node_source_details(image_id)
         node_config = cls._instantiate_model(
@@ -724,11 +725,28 @@ class NodePoolRecycler:
                 cls._to_camel_case("node_source_details"): node_source_details,
             }
 
-        # Add node cycling configuration
+        # Add node cycling configuration to enable automatic cycling
+        # This is the KEY parameter that triggers node cycling
+        cycling_details = None
+        try:
+            cycling_details = NodePoolCyclingDetails(
+                is_node_cycling_enabled=True,
+                maximum_surge=max_surge,
+                maximum_unavailable=max_unavailable,
+            )
+        except (TypeError, AttributeError):
+            # Fallback for older SDK versions
+            cycling_details = {
+                "isNodeCyclingEnabled": True,
+                "maximumSurge": max_surge,
+                "maximumUnavailable": max_unavailable,
+            }
+
+        # Add node eviction settings for graceful draining
         eviction_settings = None
         try:
             eviction_settings = NodeEvictionNodePoolSettings(
-                eviction_grace_duration="PT1H",  # 1 hour grace period
+                eviction_grace_duration="PT1H",  # 1 hour grace period for workload migration
                 is_force_delete_after_grace_duration=False,
             )
         except (TypeError, AttributeError):
@@ -738,23 +756,19 @@ class NodePoolRecycler:
                 "isForceDeleteAfterGraceDuration": False,
             }
 
-        details_kwargs = {
-            "node_config_details": node_config,
-            "node_eviction_node_pool_settings": eviction_settings,
-        }
-
-        # Add node cycling parameters based on Oracle documentation
-        # These control how many nodes are added/removed during cycling
+        # Build the complete update details
         details = None
         try:
             details = UpdateNodePoolDetails(
                 node_config_details=node_config,
+                node_pool_cycling_details=cycling_details,
                 node_eviction_node_pool_settings=eviction_settings,
             )
         except (TypeError, AttributeError):
             # Fallback to dict for older SDK versions
             details = {
                 cls._to_camel_case("node_config_details"): node_config,
+                cls._to_camel_case("node_pool_cycling_details"): cycling_details,
                 cls._to_camel_case("node_eviction_node_pool_settings"): eviction_settings,
             }
 
