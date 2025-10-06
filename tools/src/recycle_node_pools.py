@@ -143,6 +143,10 @@ class NodePoolSummary:
     post_state: Optional[str] = None
     post_image_name: Optional[str] = None
     post_node_states: List[Tuple[str, str]] = field(default_factory=list)
+    # Configuration change tracking
+    update_initiated_at: Optional[datetime] = None
+    cycling_config: Optional[Dict[str, Any]] = field(default_factory=dict)
+    eviction_config: Optional[Dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -161,6 +165,9 @@ class InstancePoolSummary:
     post_state: Optional[str] = None
     post_instance_count: int = 0
     detached_count: int = 0
+    # Configuration change tracking
+    update_initiated_at: Optional[datetime] = None
+    config_created_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -1468,6 +1475,20 @@ class NodePoolRecycler:
                     "s" if node_count != 1 else "",
                 )
 
+                # Capture configuration that will be sent
+                summary.cycling_config = {
+                    "is_node_cycling_enabled": True,
+                    "maximum_surge": "4",
+                    "maximum_unavailable": "0",
+                }
+                summary.eviction_config = {
+                    "eviction_grace_duration": "PT30M",
+                    "is_force_delete_after_grace_duration": False,
+                }
+
+                # Capture timestamp before sending update
+                summary.update_initiated_at = datetime.now(timezone.utc)
+
                 summary.update_result = self._update_node_pool_image(
                     action.context,
                     action.node_pool_id,
@@ -1533,12 +1554,16 @@ class NodePoolRecycler:
                     self._instance_pool_summaries.append(summary)
                     continue
 
+                # Capture timestamp before initiating update
+                summary.update_initiated_at = datetime.now(timezone.utc)
+
                 # Cycle the instance pool
                 cycle_result = self._cycle_instance_pool(
                     action.context,
                     action.instance_pool_id,
                     action.new_image_name,
                     action.instances,
+                    summary,  # Pass summary to capture config_created_at
                 )
                 summary.update_result = cycle_result.get("pool_update")
                 summary.instance_results = cycle_result.get("instance_results", [])
@@ -1563,6 +1588,7 @@ class NodePoolRecycler:
         instance_pool_id: str,
         new_image_name: str,
         instances: List[InstanceRecyclePlan],
+        summary: InstancePoolSummary,
     ) -> Dict[str, Any]:
         """Cycle an instance pool by updating config and detaching old instances.
 
@@ -1620,7 +1646,7 @@ class NodePoolRecycler:
 
             # Create new instance configuration with updated image
             new_config_id = self._create_instance_configuration(
-                context, current_config, target_image_id, new_image_name
+                context, current_config, target_image_id, new_image_name, summary
             )
 
             if not new_config_id:
@@ -1676,6 +1702,7 @@ class NodePoolRecycler:
         current_config: Any,
         new_image_id: str,
         new_image_name: str,
+        summary: InstancePoolSummary,
     ) -> Optional[str]:
         """Create a new instance configuration based on current config with updated image."""
         cm_client = self._get_cm_client(context)
@@ -1705,6 +1732,9 @@ class NodePoolRecycler:
 
             response = cm_client.create_instance_configuration(create_details)
             new_config_id = response.data.id
+
+            # Capture when the new configuration was created
+            summary.config_created_at = datetime.now(timezone.utc)
 
             self.logger.info(
                 "Created new instance configuration %s with image %s",
@@ -2095,17 +2125,23 @@ class NodePoolRecycler:
             "body{font-family:Arial,Helvetica,sans-serif;background:#f7f7f9;color:#1d1d1f;margin:24px;}"
             "h1{color:#0b5394;}"
             "section{margin-bottom:32px;background:#fff;padding:20px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1);}"
-            "table{width:100%;border-collapse:collapse;margin-top:12px;}"
-            "th,td{padding:8px 12px;border:1px solid #d9d9e0;text-align:left;font-size:14px;}"
-            "th{background:#0b5394;color:#fff;}"
+            "table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px;}"
+            "th,td{padding:8px 12px;border:1px solid #d9d9e0;text-align:left;font-size:13px;}"
+            "th{background:#0b5394;color:#fff;font-size:12px;}"
             "tr:nth-child(even){background:#f2f5f9;}"
             ".status-SUCCEEDED{color:#0b8a00;font-weight:600;}"
             ".status-FAILED{color:#d4351c;font-weight:600;}"
             ".status-DRY_RUN{color:#946200;font-weight:600;}"
             ".status-UNKNOWN{color:#6c757d;font-weight:600;}"
-            "code{background:#f0f0f5;padding:2px 4px;border-radius:4px;font-size:13px;}"
+            "code{background:#f0f0f5;padding:2px 4px;border-radius:4px;font-size:11px;font-family:monospace;}"
+            "small{font-size:11px;color:#666;}"
             ".nodes-table th{background:#2f5496;}"
             ".skipped{background:#fffbe6;}"
+            "details{cursor:pointer;}"
+            "details summary{padding:4px 8px;background:#e8f0fe;border-radius:4px;user-select:none;font-weight:500;}"
+            "details summary:hover{background:#d2e3fc;}"
+            "details[open] summary{background:#d2e3fc;border-bottom:1px solid #ccc;border-radius:4px 4px 0 0;}"
+            "details div{font-size:12px;line-height:1.6;}"
             "</style>"
         )
         html.append("</head>")
@@ -2144,19 +2180,20 @@ class NodePoolRecycler:
         html.append("</section>")
 
         html.append("<section>")
-        html.append("<h2>Node Pool Summary</h2>")
+        html.append("<h2>OKE Node Pool Operations</h2>")
         html.append(
             '<table class="summary-table"><thead><tr>'
             '<th>Node Pool</th><th>Compartment</th><th>Project</th><th>Environment</th>'
-            '<th>Region</th><th>Image (Before)</th><th>Image (After)</th><th>Status</th>'
-            '<th>Duration (s)</th><th>Completed At</th><th>Healthy/Total</th>'
+            '<th>Region</th><th>Image (Before)</th><th>Image (After)</th>'
+            '<th>Update Initiated</th><th>Work Request ID</th><th>Status</th>'
+            '<th>Duration (s)</th><th>Healthy/Total</th><th>Details</th>'
             '</tr></thead><tbody>'
         )
 
         if not self._summaries:
-            html.append('<tr><td colspan="11">No node pools were processed.</td></tr>')
+            html.append('<tr><td colspan="13">No node pools were processed.</td></tr>')
         else:
-            for summary in self._summaries:
+            for idx, summary in enumerate(self._summaries):
                 update_result = summary.update_result
                 status = update_result.status if update_result else "N/A"
                 status_class = f"status-{status}" if update_result else ""
@@ -2165,11 +2202,18 @@ class NodePoolRecycler:
                     if update_result and update_result.duration_seconds is not None
                     else "—"
                 )
-                completed_at = (
-                    format_datetime_local(update_result.finished_time)
-                    if update_result
-                    else "—"
-                )
+
+                # Timestamp when update was initiated
+                initiated_at = format_datetime_local(summary.update_initiated_at) if summary.update_initiated_at else "—"
+
+                # Work request ID with colored status
+                work_request_id = update_result.work_request_id if update_result else None
+                if work_request_id:
+                    wr_short = work_request_id.split(".")[-1][:12] if "." in work_request_id else work_request_id[:12]
+                    work_request_html = f'<code class="{status_class}" title="{html_escape(work_request_id)}">{html_escape(wr_short)}...</code>'
+                else:
+                    work_request_html = "—"
+
                 post_state = summary.post_state or "Unknown"
                 healthy = sum(
                     1
@@ -2180,12 +2224,26 @@ class NodePoolRecycler:
                 healthy_display = f"{healthy}/{total}" if total else "0/0"
                 before_html = (
                     f"{html_escape(summary.original_image_name) or 'Unknown'}"
-                    f"<br/><code>{html_escape(summary.original_image_id) or '—'}</code>"
+                    f"<br/><small><code>{html_escape(summary.original_image_id[-16:] if summary.original_image_id else '—')}</code></small>"
                 )
                 after_html = (
                     f"{html_escape(summary.target_image) or 'Unknown'}"
-                    f"<br/><code>{html_escape(summary.target_image_id) or '—'}</code>"
+                    f"<br/><small><code>{html_escape(summary.target_image_id[-16:] if summary.target_image_id else '—')}</code></small>"
                 )
+
+                # Build configuration details for expandable section
+                config_details = []
+                if summary.cycling_config:
+                    config_details.append("<strong>Node Cycling Config:</strong>")
+                    for key, val in summary.cycling_config.items():
+                        config_details.append(f"&nbsp;&nbsp;• {key}: <code>{html_escape(str(val))}</code>")
+                if summary.eviction_config:
+                    config_details.append("<strong>Eviction Settings:</strong>")
+                    for key, val in summary.eviction_config.items():
+                        config_details.append(f"&nbsp;&nbsp;• {key}: <code>{html_escape(str(val))}</code>")
+
+                details_html = f'<details><summary>Show Config</summary><div style="padding:8px;background:#f5f5f5;margin-top:4px;">{"<br/>".join(config_details) if config_details else "No config details"}</div></details>'
+
                 html.append("<tr>")
                 html.append(f"<td><code>{html_escape(summary.node_pool_id)}</code></td>")
                 html.append(f"<td>{html_escape(summary.compartment_id) or 'Unknown'}</td>")
@@ -2194,10 +2252,12 @@ class NodePoolRecycler:
                 html.append(f"<td>{html_escape(summary.context.region)}</td>")
                 html.append(f"<td>{before_html}</td>")
                 html.append(f"<td>{after_html}</td>")
+                html.append(f"<td>{initiated_at}</td>")
+                html.append(f"<td>{work_request_html}</td>")
                 html.append(f"<td class='{status_class}'>{html_escape(status)}</td>")
                 html.append(f"<td>{duration}</td>")
-                html.append(f"<td>{html_escape(completed_at)}</td>")
                 html.append(f"<td>{healthy_display}</td>")
+                html.append(f"<td>{details_html}</td>")
                 html.append("</tr>")
         html.append("</tbody></table>")
         html.append("</section>")
@@ -2209,12 +2269,17 @@ class NodePoolRecycler:
             html.append(
                 "<table><thead><tr>"
                 "<th>Instance Pool ID</th>"
-                "<th>Target Image</th>"
-                "<th>Instances Detached</th>"
+                "<th>Compartment</th>"
+                "<th>Image (Before)</th>"
+                "<th>Image (After)</th>"
+                "<th>Update Initiated</th>"
+                "<th>Config Created</th>"
                 "<th>New Config ID</th>"
                 "<th>Status</th>"
+                "<th>Instances Detached</th>"
                 "<th>Post State</th>"
-                "<th>Post Instance Count</th>"
+                "<th>Post Count</th>"
+                "<th>Details</th>"
                 "</tr></thead><tbody>"
             )
 
@@ -2222,19 +2287,49 @@ class NodePoolRecycler:
                 status = summary.update_result.status if summary.update_result else "UNKNOWN"
                 status_class = f"status-{status}"
 
+                # Timestamps
+                initiated_at = format_datetime_local(summary.update_initiated_at) if summary.update_initiated_at else "—"
+                config_created_at = format_datetime_local(summary.config_created_at) if summary.config_created_at else "—"
+
+                # New config ID (shortened)
                 new_config_short = ""
                 if summary.new_instance_config_id:
                     parts = summary.new_instance_config_id.split(".")
                     new_config_short = f"...{parts[-1][:12]}" if parts else summary.new_instance_config_id[:15]
 
+                # Image details
+                before_html = (
+                    f"{html_escape(summary.original_image_name) or 'Unknown'}"
+                    f"<br/><small><code>{html_escape(summary.original_image_id[-16:] if summary.original_image_id else '—')}</code></small>"
+                )
+                after_html = (
+                    f"{html_escape(summary.target_image) or 'Unknown'}"
+                    f"<br/><small><code>{html_escape(summary.target_image_id[-16:] if summary.target_image_id else '—')}</code></small>"
+                )
+
+                # Configuration details
+                config_details = []
+                config_details.append(f"<strong>Original Config ID:</strong><br/><code>{html_escape(summary.original_instance_config_id or 'N/A')}</code>")
+                config_details.append(f"<strong>New Config ID:</strong><br/><code>{html_escape(summary.new_instance_config_id or 'N/A')}</code>")
+                config_details.append(f"<strong>Max Surge:</strong> 4 instances")
+                config_details.append(f"<strong>is_decrement_size:</strong> False (maintains capacity)")
+                config_details.append(f"<strong>is_auto_terminate:</strong> True (auto-cleanup)")
+
+                details_html = f'<details><summary>Show Config</summary><div style="padding:8px;background:#f5f5f5;margin-top:4px;">{"<br/>".join(config_details)}</div></details>'
+
                 html.append("<tr>")
                 html.append(f"<td><code>{html_escape(summary.instance_pool_id)}</code></td>")
-                html.append(f"<td>{html_escape(summary.target_image)}</td>")
-                html.append(f"<td>{summary.detached_count} / {len(summary.instance_results)}</td>")
-                html.append(f"<td><code>{html_escape(new_config_short)}</code></td>")
+                html.append(f"<td>{html_escape(summary.compartment_id) or 'Unknown'}</td>")
+                html.append(f"<td>{before_html}</td>")
+                html.append(f"<td>{after_html}</td>")
+                html.append(f"<td>{initiated_at}</td>")
+                html.append(f"<td>{config_created_at}</td>")
+                html.append(f"<td><code title='{html_escape(summary.new_instance_config_id or '')}'>{html_escape(new_config_short) or '—'}</code></td>")
                 html.append(f"<td class='{status_class}'>{html_escape(status)}</td>")
+                html.append(f"<td>{summary.detached_count} / {len(summary.instance_results)}</td>")
                 html.append(f"<td>{html_escape(summary.post_state or '—')}</td>")
                 html.append(f"<td>{summary.post_instance_count}</td>")
+                html.append(f"<td>{details_html}</td>")
                 html.append("</tr>")
 
             html.append("</tbody></table>")
