@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import getpass
 import logging
 import sys
 import time
@@ -1179,9 +1180,11 @@ class NodePoolRecycler:
         if not self._report_path:
             return
 
-        generated_at = datetime.now(timezone.utc).isoformat()
+        generated_at_dt = datetime.now().astimezone()
+        generated_at = generated_at_dt.isoformat()
         used_regions = sorted({context[2] for context in self._used_contexts})
         region_value = ", ".join(used_regions) if used_regions else "unknown"
+        operator_name = getpass.getuser()
 
         def html_escape(value: Optional[str]) -> str:
             if value is None:
@@ -1192,6 +1195,13 @@ class NodePoolRecycler:
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
             )
+
+        def format_datetime_local(value: Optional[datetime]) -> str:
+            if value is None:
+                return "—"
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone().isoformat()
 
         html: List[str] = []
         html.append("<!DOCTYPE html>")
@@ -1238,6 +1248,9 @@ class NodePoolRecycler:
             f"<li><strong>Config File:</strong> {html_escape(str(config_display))}</li>"
         )
         html.append(
+            f"<li><strong>Operator:</strong> {html_escape(operator_name)}</li>"
+        )
+        html.append(
             f"<li><strong>Regions Evaluated:</strong> {html_escape(region_value)}</li>"
         )
         html.append(
@@ -1276,8 +1289,8 @@ class NodePoolRecycler:
                     else "—"
                 )
                 completed_at = (
-                    update_result.finished_time.isoformat()
-                    if update_result and update_result.finished_time
+                    format_datetime_local(update_result.finished_time)
+                    if update_result
                     else "—"
                 )
                 post_state = summary.post_state or "Unknown"
@@ -1311,107 +1324,6 @@ class NodePoolRecycler:
                 html.append("</tr>")
         html.append("</tbody></table>")
         html.append("</section>")
-
-        for summary in self._summaries:
-            html.append("<section>")
-            html.append(
-                f"<h3>Node Pool Detail: <code>{html_escape(summary.node_pool_id)}</code></h3>"
-            )
-            html.append(
-                "<p>Project <strong>{project}</strong> &middot; Environment <strong>{stage}</strong> &middot; "
-                "Region <strong>{region}</strong> &middot; Compartment <code>{compartment}</code></p>".format(
-                    project=html_escape(summary.context.project),
-                    stage=html_escape(summary.context.stage),
-                    region=html_escape(summary.context.region),
-                    compartment=html_escape(summary.compartment_id) or "Unknown",
-                )
-            )
-            html.append(
-                "<p><strong>Image before:</strong> {before} <code>{before_id}</code><br/>"
-                "<strong>Image after:</strong> {after} <code>{after_id}</code></p>".format(
-                    before=html_escape(summary.original_image_name) or "Unknown",
-                    before_id=html_escape(summary.original_image_id) or "—",
-                    after=html_escape(summary.target_image) or "Unknown",
-                    after_id=html_escape(summary.target_image_id) or "—",
-                )
-            )
-
-            update_result = summary.update_result
-            if update_result:
-                html.append("<ul>")
-                html.append(
-                    f"<li><strong>Status:</strong> <span class='status-{html_escape(update_result.status)}'>{html_escape(update_result.status)}</span></li>"
-                )
-                if update_result.work_request_id:
-                    html.append(
-                        f"<li><strong>Work Request:</strong> <code>{html_escape(update_result.work_request_id)}</code></li>"
-                    )
-                if update_result.accepted_time:
-                    html.append(
-                        f"<li><strong>Accepted:</strong> {html_escape(update_result.accepted_time.isoformat())}</li>"
-                    )
-                if update_result.finished_time:
-                    html.append(
-                        f"<li><strong>Completed:</strong> {html_escape(update_result.finished_time.isoformat())}</li>"
-                    )
-                if update_result.duration_seconds is not None:
-                    html.append(
-                        f"<li><strong>Duration:</strong> {update_result.duration_seconds:.1f} seconds</li>"
-                    )
-                if update_result.errors:
-                    html.append("<li><strong>Errors:</strong><ul>")
-                    for err in update_result.errors:
-                        html.append(f"<li>{html_escape(err)}</li>")
-                    html.append("</ul></li>")
-                html.append("</ul>")
-
-            html.append("<h4>Node Operations</h4>")
-            html.append(
-                '<table class="nodes-table"><thead><tr><th>Description</th><th>Status</th><th>Duration (s)</th><th>Completed At</th><th>Work Request</th><th>Notes</th></tr></thead><tbody>'
-            )
-            if not summary.node_results:
-                html.append('<tr><td colspan="6">No node recycle operations were recorded.</td></tr>')
-            else:
-                for node_result in summary.node_results:
-                    duration_val = (
-                        f"{node_result.duration_seconds:.1f}"
-                        if node_result.duration_seconds is not None
-                        else "—"
-                    )
-                    finished_val = (
-                        node_result.finished_time.isoformat() if node_result.finished_time else "—"
-                    )
-                    work_request_val = (
-                        html_escape(node_result.work_request_id)
-                        if node_result.work_request_id
-                        else "—"
-                    )
-                    notes = "; ".join(node_result.errors) if node_result.errors else "—"
-                    html.append(
-                        "<tr>"
-                        f"<td>{html_escape(node_result.description)}</td>"
-                        f"<td class='status-{html_escape(node_result.status)}'>{html_escape(node_result.status)}</td>"
-                        f"<td>{duration_val}</td>"
-                        f"<td>{html_escape(finished_val)}</td>"
-                        f"<td>{work_request_val}</td>"
-                        f"<td>{html_escape(notes)}</td>"
-                        "</tr>"
-                    )
-            html.append("</tbody></table>")
-
-            html.append("<h4>Post-operation Node Health</h4>")
-            html.append(
-                "<table><thead><tr><th>Node</th><th>Lifecycle State</th></tr></thead><tbody>"
-            )
-            if not summary.post_node_states:
-                html.append('<tr><td colspan="2">Unknown</td></tr>')
-            else:
-                for node_name, state in summary.post_node_states:
-                    html.append(
-                        f"<tr><td><code>{html_escape(node_name)}</code></td><td>{html_escape(state) or 'Unknown'}</td></tr>"
-                    )
-            html.append("</tbody></table>")
-            html.append("</section>")
 
         if self._missing_hosts:
             html.append('<section class="skipped">')
