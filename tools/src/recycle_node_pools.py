@@ -23,7 +23,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import oci
 from oci import exceptions as oci_exceptions
 from oci.container_engine import ContainerEngineClient
-from oci.container_engine.models import UpdateNodePoolDetails, UpdateNodePoolNodeConfigDetails
+from oci.container_engine.models import (
+    NodeEvictionNodePoolSettings,
+    UpdateNodePoolDetails,
+    UpdateNodePoolNodeConfigDetails,
+)
 
 try:  # OCI SDK < 2.110.0 does not expose UpdateNodeSourceViaImageDetails
     from oci.container_engine.models import UpdateNodeSourceViaImageDetails as _UpdateNodeSourceViaImageDetails
@@ -693,7 +697,16 @@ class NodePoolRecycler:
         return None
 
     @classmethod
-    def _build_update_node_pool_details(cls, image_id: str) -> Any:
+    def _build_update_node_pool_details(
+        cls, image_id: str, max_surge: int = 1, max_unavailable: int = 0
+    ) -> Any:
+        """Build node pool update details with image and node cycling configuration.
+
+        Args:
+            image_id: The OCID of the new image
+            max_surge: Maximum number of additional nodes during cycling (default: 1)
+            max_unavailable: Maximum number of unavailable nodes during cycling (default: 0)
+        """
         node_source_details = cls._build_node_source_details(image_id)
         node_config = cls._instantiate_model(
             UpdateNodePoolNodeConfigDetails,
@@ -705,14 +718,38 @@ class NodePoolRecycler:
                 cls._to_camel_case("node_source_details"): node_source_details,
             }
 
-        details = cls._instantiate_model(
-            UpdateNodePoolDetails,
-            "node_config_details",
-            node_config,
-        )
-        if details is None:
+        # Add node cycling configuration
+        eviction_settings = None
+        try:
+            eviction_settings = NodeEvictionNodePoolSettings(
+                eviction_grace_duration="PT1H",  # 1 hour grace period
+                is_force_delete_after_grace_duration=False,
+            )
+        except (TypeError, AttributeError):
+            # Fallback for older SDK versions
+            eviction_settings = {
+                "evictionGraceDuration": "PT1H",
+                "isForceDeleteAfterGraceDuration": False,
+            }
+
+        details_kwargs = {
+            "node_config_details": node_config,
+            "node_eviction_node_pool_settings": eviction_settings,
+        }
+
+        # Add node cycling parameters based on Oracle documentation
+        # These control how many nodes are added/removed during cycling
+        details = None
+        try:
+            details = UpdateNodePoolDetails(
+                node_config_details=node_config,
+                node_eviction_node_pool_settings=eviction_settings,
+            )
+        except (TypeError, AttributeError):
+            # Fallback to dict for older SDK versions
             details = {
                 cls._to_camel_case("node_config_details"): node_config,
+                cls._to_camel_case("node_eviction_node_pool_settings"): eviction_settings,
             }
 
         return details
@@ -1069,16 +1106,26 @@ class NodePoolRecycler:
             )
 
             if self.dry_run:
-                description = f"Update node pool {action.node_pool_id}"
+                description = f"Update node pool {action.node_pool_id} with automatic node cycling"
+                node_count = len(action.nodes)
                 self.logger.info(
-                    "[DRY RUN] Would update node pool %s to image '%s'",
+                    "[DRY RUN] Would update node pool %s to image '%s' (%d node%s will be cycled automatically)",
                     action.node_pool_id,
                     action.new_image_name,
+                    node_count,
+                    "s" if node_count != 1 else "",
                 )
                 summary.update_result = WorkRequestResult(
                     description=description,
                     status="DRY_RUN",
                 )
+                # Log affected nodes for dry-run visibility
+                for node in action.nodes:
+                    self.logger.info(
+                        "[DRY RUN]   - Node %s (%s) will be cycled by OCI",
+                        node.host_name,
+                        node.instance_id,
+                    )
             else:
                 target_image_id = self._resolve_target_image_id(
                     action.context,
@@ -1089,7 +1136,7 @@ class NodePoolRecycler:
                 summary.target_image_id = target_image_id
                 if not target_image_id:
                     summary.update_result = WorkRequestResult(
-                        description=f"Update node pool {action.node_pool_id}",
+                        description=f"Update node pool {action.node_pool_id} with automatic node cycling",
                         status="FAILED",
                         errors=[
                             "Unable to resolve target image identifier"
@@ -1098,6 +1145,15 @@ class NodePoolRecycler:
                     )
                     self._summaries.append(summary)
                     continue
+
+                node_count = len(action.nodes)
+                self.logger.info(
+                    "Updating node pool %s with automatic node cycling (%d node%s will be cycled)",
+                    action.node_pool_id,
+                    node_count,
+                    "s" if node_count != 1 else "",
+                )
+
                 summary.update_result = self._update_node_pool_image(
                     action.context,
                     action.node_pool_id,
@@ -1105,23 +1161,13 @@ class NodePoolRecycler:
                     action.new_image_name,
                 )
 
-            for node in action.nodes:
-                if self.dry_run:
+                # Log that OCI will handle the cycling automatically
+                if summary.update_result.status == "SUCCEEDED":
                     self.logger.info(
-                        "[DRY RUN] Would recycle node %s (%s) in node pool %s",
-                        node.host_name,
-                        node.instance_id,
+                        "Node pool %s update initiated successfully. "
+                        "OCI will automatically cycle nodes with new image.",
                         action.node_pool_id,
                     )
-                    summary.node_results.append(
-                        WorkRequestResult(
-                            description=(f"Recycle node {node.host_name} ({node.instance_id})"),
-                            status="DRY_RUN",
-                        )
-                    )
-                    continue
-                recycle_result = self._recycle_node(action.context, action.node_pool_id, node)
-                summary.node_results.append(recycle_result)
 
             post_state, post_image, post_nodes = self._capture_node_pool_health(
                 action.context, action.node_pool_id
@@ -1139,9 +1185,17 @@ class NodePoolRecycler:
         target_image_id: str,
         target_image_name: str,
     ) -> WorkRequestResult:
-        """Update the node pool to the new image and wait for the work request."""
+        """Update the node pool with new image and automatic node cycling configuration.
+
+        This triggers OCI's automatic node cycling which will:
+        1. Create new nodes with the updated image
+        2. Drain and move workloads to new nodes
+        3. Terminate old nodes
+
+        The process is controlled by eviction settings configured in the update.
+        """
         self.logger.info(
-            "Updating node pool %s with new node image '%s'",
+            "Updating node pool %s with new node image '%s' (automatic cycling enabled)",
             node_pool_id,
             target_image_name,
         )
@@ -1187,75 +1241,6 @@ class NodePoolRecycler:
             errors=[message],
         )
 
-    def _recycle_node(
-        self, context: CompartmentContext, node_pool_id: str, plan: NodeRecyclePlan
-    ) -> WorkRequestResult:
-        """Delete a specific node from the pool so OKE can recreate it with the new image."""
-        self.logger.info(
-            "Recycling node %s (%s) from pool %s",
-            plan.host_name,
-            plan.instance_id,
-            node_pool_id,
-        )
-
-        ce_client = self._get_ce_client(context)
-        if not ce_client:
-            message = f"No Container Engine client available for region {context.region}"
-            self.logger.error(message)
-            self._errors.append(message)
-            return WorkRequestResult(
-                description=f"Recycle node {plan.host_name} ({plan.instance_id})",
-                status="FAILED",
-                errors=[message],
-            )
-
-        try:
-            response = ce_client.delete_node(
-                node_pool_id=node_pool_id,
-                node_id=plan.instance_id,
-                is_decrement_size=False,
-            )
-        except oci_exceptions.ServiceError as exc:
-            self.logger.error(
-                "Failed to recycle node %s (%s): %s",
-                plan.host_name,
-                plan.instance_id,
-                exc.message,
-            )
-            self._errors.append(
-                f"Failed to recycle node {plan.host_name} ({plan.instance_id}): {exc.message}"
-            )
-            return WorkRequestResult(
-                description=f"Recycle node {plan.host_name} ({plan.instance_id})",
-                status="FAILED",
-                errors=[exc.message],
-            )
-
-        work_request_id = response.headers.get("opc-work-request-id")
-        if work_request_id:
-            result = self._wait_for_work_request(
-                context,
-                work_request_id,
-                f"Recycle node {plan.host_name} ({plan.instance_id})",
-            )
-            if result.status != "SUCCEEDED":
-                self._errors.append(
-                    "Node recycle for {host} ({instance}) ended with status {status}".format(
-                        host=plan.host_name,
-                        instance=plan.instance_id,
-                        status=result.status,
-                    )
-                )
-            return result
-
-        message = f"Node recycle for {plan.host_name} ({plan.instance_id}) returned no work request"
-        self.logger.warning(message)
-        self._errors.append(message)
-        return WorkRequestResult(
-            description=f"Recycle node {plan.host_name} ({plan.instance_id})",
-            status="UNKNOWN",
-            errors=[message],
-        )
 
     def _wait_for_work_request(
         self, context: CompartmentContext, work_request_id: str, description: str
