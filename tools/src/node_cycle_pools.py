@@ -774,6 +774,7 @@ class NodePoolRecycler:
 
         active_count = 0
         inactive_states = []
+        all_active_names = []
 
         for instance in instances:
             if instance.lifecycle_state not in ACTIVE_INSTANCE_STATES:
@@ -786,12 +787,14 @@ class NodePoolRecycler:
 
             active_count += 1
             instance_names = self._candidate_names(instance)
+            display_name = getattr(instance, "display_name", "N/A")
+            all_active_names.append(display_name)
 
             # Detailed logging for each active instance
             self.logger.debug(
                 "Instance %d: display_name='%s', id='%s', state='%s', candidate_names=%s",
                 active_count,
-                getattr(instance, "display_name", "N/A"),
+                display_name,
                 instance.id[-12:],
                 instance.lifecycle_state,
                 instance_names
@@ -830,6 +833,12 @@ class NodePoolRecycler:
                     "Search keys were: '%s' or '%s'. Try checking if hostname in CSV matches instance display_name/hostname in OCI.",
                     host_key, base_host_key
                 )
+                # Show actual instance names found (at INFO level so it's always visible)
+                if all_active_names:
+                    self.logger.info(
+                        "Active instances found in compartment: %s",
+                        ", ".join(f"'{name}'" for name in all_active_names[:10])
+                    )
             return None
 
         if len(matches) > 1:
