@@ -1179,7 +1179,7 @@ class NodePoolRecycler:
             "<style>"
             "body{font-family:Arial,Helvetica,sans-serif;background:#f7f7f9;color:#1d1d1f;margin:24px;}"
             "h1{color:#0b5394;}"
-            "section{margin-bottom:32px;background:#fff;padding:20px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1);}""
+            "section{margin-bottom:32px;background:#fff;padding:20px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1);}"
             "table{width:100%;border-collapse:collapse;margin-top:12px;}"
             "th,td{padding:8px 12px;border:1px solid #d9d9e0;text-align:left;font-size:14px;}"
             "th{background:#0b5394;color:#fff;}"
@@ -1230,15 +1230,15 @@ class NodePoolRecycler:
         html.append("<section>")
         html.append("<h2>Node Pool Summary</h2>")
         html.append(
-            "<table class="summary-table"><thead><tr>"
-            "<th>Node Pool</th><th>Compartment</th><th>Project</th><th>Environment</th>"
-            "<th>Region</th><th>Image (Before)</th><th>Image (After)</th><th>Status</th>"
-            "<th>Duration (s)</th><th>Completed At</th><th>Healthy/Total</th>"
-            "</tr></thead><tbody>"
+            '<table class="summary-table"><thead><tr>'
+            '<th>Node Pool</th><th>Compartment</th><th>Project</th><th>Environment</th>'
+            '<th>Region</th><th>Image (Before)</th><th>Image (After)</th><th>Status</th>'
+            '<th>Duration (s)</th><th>Completed At</th><th>Healthy/Total</th>'
+            '</tr></thead><tbody>'
         )
 
         if not self._summaries:
-            html.append("<tr><td colspan="11">No node pools were processed.</td></tr>")
+            html.append('<tr><td colspan="11">No node pools were processed.</td></tr>')
         else:
             for summary in self._summaries:
                 update_result = summary.update_result
@@ -1341,10 +1341,10 @@ class NodePoolRecycler:
 
             html.append("<h4>Node Operations</h4>")
             html.append(
-                "<table class="nodes-table"><thead><tr><th>Description</th><th>Status</th><th>Duration (s)</th><th>Completed At</th><th>Work Request</th><th>Notes</th></tr></thead><tbody>"
+                '<table class="nodes-table"><thead><tr><th>Description</th><th>Status</th><th>Duration (s)</th><th>Completed At</th><th>Work Request</th><th>Notes</th></tr></thead><tbody>'
             )
             if not summary.node_results:
-                html.append("<tr><td colspan="6">No node recycle operations were recorded.</td></tr>")
+                html.append('<tr><td colspan="6">No node recycle operations were recorded.</td></tr>')
             else:
                 for node_result in summary.node_results:
                     duration_val = (
@@ -1378,7 +1378,7 @@ class NodePoolRecycler:
                 "<table><thead><tr><th>Node</th><th>Lifecycle State</th></tr></thead><tbody>"
             )
             if not summary.post_node_states:
-                html.append("<tr><td colspan="2">Unknown</td></tr>")
+                html.append('<tr><td colspan="2">Unknown</td></tr>')
             else:
                 for node_name, state in summary.post_node_states:
                     html.append(
@@ -1388,7 +1388,7 @@ class NodePoolRecycler:
             html.append("</section>")
 
         if self._missing_hosts:
-            html.append("<section class="skipped">")
+            html.append('<section class="skipped">')
             html.append("<h2>Skipped Hosts</h2>")
             html.append(
                 "<table><thead><tr><th>Host</th><th>Compartment</th><th>Reason</th></tr></thead><tbody>"
@@ -1404,8 +1404,7 @@ class NodePoolRecycler:
 
         self._report_path.parent.mkdir(parents=True, exist_ok=True)
         with self._report_path.open("w", encoding="utf-8") as handle:
-            handle.write("
-".join(html))
+            handle.write("\n".join(html))
 
         self.logger.info("Operation report written to %s", self._report_path)
 
