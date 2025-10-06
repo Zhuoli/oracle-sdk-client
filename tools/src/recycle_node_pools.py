@@ -676,6 +676,110 @@ class NodePoolRecycler:
             "image_id": image_id,
         }
 
+    # --- Image metadata helpers -------------------------------------------------
+
+    @staticmethod
+    def _safe_get_defined_tag(resource: Any, namespace: str, key: str) -> Optional[str]:
+        tags = getattr(resource, "defined_tags", None)
+        if not isinstance(tags, dict):
+            return None
+        ns = tags.get(namespace)
+        if not isinstance(ns, dict):
+            return None
+        value = ns.get(key)
+        if isinstance(value, str) and value:
+            return value
+        return None
+
+    @classmethod
+    def _get_image_type(cls, resource: Any) -> Optional[str]:
+        for namespace in ("ics_images", "icm_images"):
+            image_type = cls._safe_get_defined_tag(resource, namespace, "type")
+            if image_type:
+                return image_type
+        return None
+
+    @classmethod
+    def _get_image_release(cls, resource: Any) -> Optional[str]:
+        for namespace in ("ics_images", "icm_images"):
+            release = cls._safe_get_defined_tag(resource, namespace, "release")
+            if release:
+                return release
+        return None
+
+    @staticmethod
+    def _extract_release_hint(identifier: str) -> Optional[str]:
+        match = re.search(r"(20\d{6})", identifier)
+        if match:
+            return match.group(1)
+        return None
+
+    @classmethod
+    def _find_latest_image_with_same_type(
+        cls,
+        compute_client: Any,
+        compartment_id: str,
+        target_type: str,
+    ) -> Optional[Any]:
+        try:
+            images = list_call_get_all_results(
+                compute_client.list_images,
+                compartment_id,
+                sort_by="TIMECREATED",
+                sort_order="DESC",
+            ).data
+        except oci_exceptions.ServiceError as exc:
+            logging.getLogger(LOGGER_NAME).warning(
+                "Unable to list images for type %s in compartment %s: %s",
+                target_type,
+                compartment_id,
+                exc.message,
+            )
+            return None
+
+        for image in images:
+            image_type = cls._get_image_type(image)
+            if not image_type or image_type.lower() != target_type.lower():
+                continue
+            release = cls._get_image_release(image)
+            if release and release.upper() == "LATEST":
+                return image
+        return None
+
+    @classmethod
+    def _find_image_by_type_and_release(
+        cls,
+        compute_client: Any,
+        compartment_id: str,
+        target_type: Optional[str],
+        target_release: str,
+    ) -> Optional[Any]:
+        try:
+            images = list_call_get_all_results(
+                compute_client.list_images,
+                compartment_id,
+                sort_by="TIMECREATED",
+                sort_order="DESC",
+            ).data
+        except oci_exceptions.ServiceError as exc:
+            logging.getLogger(LOGGER_NAME).warning(
+                "Unable to list images while searching for release %s in compartment %s: %s",
+                target_release,
+                compartment_id,
+                exc.message,
+            )
+            return None
+
+        for image in images:
+            if target_type:
+                image_type = cls._get_image_type(image)
+                if not image_type or image_type.lower() != target_type.lower():
+                    continue
+            release = cls._get_image_release(image)
+            if release and release.lower() == target_release.lower():
+                return image
+        return None
+
     def _resolve_image_name(
         self, context: CompartmentContext, instance: oci.core.models.Instance
     ) -> Optional[str]:
@@ -718,6 +822,7 @@ class NodePoolRecycler:
         context: CompartmentContext,
         compartment_id: Optional[str],
         image_identifier: str,
+        current_image_id: Optional[str],
     ) -> Optional[str]:
         """Resolve a target image identifier (name or OCID) to an image OCID."""
 
@@ -726,42 +831,104 @@ class NodePoolRecycler:
         if image_identifier.startswith("ocid1.image"):
             return image_identifier
 
-        if not compartment_id:
-            return None
-
         client = self._get_client(context)
         if not client:
             return None
 
         compute_client = client.compute_client
-        try:
-            response = list_call_get_all_results(
-                compute_client.list_images,
-                compartment_id,
-                display_name=image_identifier,
-                sort_by="TIMECREATED",
-                sort_order="DESC",
-            )
-        except oci_exceptions.ServiceError as exc:
-            message = (
-                "Failed to list images for display name '{name}' in compartment {compartment}: {error}".format(
-                    name=image_identifier,
-                    compartment=compartment_id,
-                    error=exc.message,
-                )
-            )
-            self.logger.error(message)
-            self._errors.append(message)
-            return None
+        normalized_name = image_identifier.strip()
+        normalized_name_ci = normalized_name.lower()
 
-        for image in response.data:
-            if getattr(image, "display_name", None) == image_identifier:
-                return getattr(image, "id", None)
+        image_compartment_id: Optional[str] = None
+        image_type: Optional[str] = None
+        if current_image_id:
+            try:
+                current_image = compute_client.get_image(current_image_id).data
+                image_compartment_id = getattr(current_image, "compartment_id", None)
+                image_type = self._get_image_type(current_image)
+            except oci_exceptions.ServiceError as exc:
+                self.logger.warning(
+                    "Unable to fetch current image %s metadata: %s",
+                    current_image_id,
+                    exc.message,
+                )
+
+        search_compartments: List[str] = []
+        if image_compartment_id:
+            search_compartments.append(image_compartment_id)
+        if compartment_id and compartment_id not in search_compartments:
+            search_compartments.append(compartment_id)
+
+        for cid in search_compartments:
+            try:
+                images = list_call_get_all_results(
+                    compute_client.list_images,
+                    cid,
+                    display_name=normalized_name,
+                    sort_by="TIMECREATED",
+                    sort_order="DESC",
+                ).data
+            except oci_exceptions.ServiceError as exc:
+                self.logger.warning(
+                    "Failed to list images named '%s' in compartment %s: %s",
+                    normalized_name,
+                    cid,
+                    exc.message,
+                )
+                continue
+
+            for image in images:
+                display_name = getattr(image, "display_name", None)
+                if isinstance(display_name, str) and display_name.strip().lower() == normalized_name_ci:
+                    image_id = getattr(image, "id", None)
+                    if isinstance(image_id, str):
+                        return image_id
+
+        if image_compartment_id and image_type:
+            latest_image = self._find_latest_image_with_same_type(
+                compute_client,
+                image_compartment_id,
+                image_type,
+            )
+            if latest_image:
+                candidate_name = (
+                    getattr(latest_image, "display_name", "")
+                    or getattr(latest_image, "id", "")
+                )
+                if candidate_name.strip().lower() == normalized_name_ci:
+                    image_id = getattr(latest_image, "id", None)
+                    if isinstance(image_id, str):
+                        return image_id
+                else:
+                    latest_release = self._get_image_release(latest_image)
+                    name_release = self._extract_release_hint(normalized_name)
+                    if (
+                        latest_release
+                        and name_release
+                        and latest_release.lower() == name_release.lower()
+                    ):
+                        image_id = getattr(latest_image, "id", None)
+                        if isinstance(image_id, str):
+                            return image_id
+
+        if image_compartment_id:
+            release_hint = self._extract_release_hint(normalized_name)
+            if release_hint:
+                candidate = self._find_image_by_type_and_release(
+                    compute_client,
+                    image_compartment_id,
+                    image_type,
+                    release_hint,
+                )
+                if candidate:
+                    image_id = getattr(candidate, "id", None)
+                    if isinstance(image_id, str):
+                        return image_id
 
         message = (
-            "Unable to resolve image ID for display name '{name}' in compartment {compartment}".format(
+            "Unable to resolve image ID for identifier '{name}' in compartments {compartments}".format(
                 name=image_identifier,
-                compartment=compartment_id,
+                compartments=", ".join(search_compartments) if search_compartments else "(none)",
             )
         )
         self.logger.error(message)
@@ -876,6 +1043,7 @@ class NodePoolRecycler:
                     action.context,
                     summary_compartment,
                     action.new_image_name,
+                    current_image_id,
                 )
                 summary.target_image_id = target_image_id
                 if not target_image_id:
