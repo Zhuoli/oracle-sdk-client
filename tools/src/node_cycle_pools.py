@@ -1822,12 +1822,47 @@ class NodePoolRecycler:
             # Get current instance configuration
             current_config = cm_client.get_instance_configuration(current_config_id).data
 
-            # Resolve target image ID
+            # Resolve target image ID - extract current image from instance configuration
             current_image_id = None
             if hasattr(current_config, 'instance_details'):
-                launch_details = getattr(current_config.instance_details, 'launch_details', None)
-                if launch_details:
+                instance_details = current_config.instance_details
+                # Try different paths where image_id might be stored
+                if hasattr(instance_details, 'launch_details'):
+                    launch_details = instance_details.launch_details
                     current_image_id = getattr(launch_details, 'image_id', None)
+                elif hasattr(instance_details, 'source_details'):
+                    source_details = instance_details.source_details
+                    current_image_id = getattr(source_details, 'image_id', None)
+
+            # Log what we found
+            if current_image_id:
+                self.logger.debug(
+                    "Extracted current image ID from instance config: %s",
+                    current_image_id[-12:] if current_image_id else "None"
+                )
+            else:
+                self.logger.warning(
+                    "Could not extract current image ID from instance configuration %s",
+                    current_config_id[-12:]
+                )
+                # Try to get image ID from one of the actual instances
+                if instances:
+                    client = self._get_client(context)
+                    if client:
+                        try:
+                            inst_response = client.compute_client.get_instance(instances[0].instance_id)
+                            instance = inst_response.data
+                            source_details = getattr(instance, 'source_details', None)
+                            if source_details:
+                                current_image_id = getattr(source_details, 'image_id', None)
+                                if current_image_id:
+                                    self.logger.info(
+                                        "Extracted current image ID from instance %s: %s",
+                                        instances[0].instance_id[-12:],
+                                        current_image_id[-12:]
+                                    )
+                        except Exception as e:
+                            self.logger.debug("Could not get image from instance: %s", str(e))
 
             target_image_id = self._resolve_target_image_id(
                 context,
