@@ -33,6 +33,7 @@ from oci.container_engine.models import (
     UpdateNodePoolDetails,
 )
 from oci.core import ComputeManagementClient
+import re
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
