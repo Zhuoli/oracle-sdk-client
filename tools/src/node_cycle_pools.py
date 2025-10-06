@@ -440,8 +440,9 @@ class NodePoolRecycler:
                 current_image = (raw_row.get(column_map["current image"], "") or "").strip()
                 new_image = (raw_row.get(column_map["new image name"], "") or "").strip()
 
-                # Skip rows where 'Newer Available Image' is empty or '-' (already using latest image)
-                if not new_image or new_image == "-":
+                # Skip rows where 'Newer Available Image' is empty or '-' or '—' (already using latest image)
+                # Note: CSV may contain em-dash (—) or regular hyphen (-)
+                if not new_image or new_image in ("-", "—", "–"):
                     self.logger.debug(
                         "Skipping row for host=%r - already using latest image (new_image=%r)",
                         host,
