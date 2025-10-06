@@ -12,7 +12,6 @@ import argparse
 import csv
 import getpass
 import logging
-import re
 import sys
 import time
 import webbrowser
@@ -677,96 +676,6 @@ class NodePoolRecycler:
             "image_id": image_id,
         }
 
-    # --- Image tagging helpers -------------------------------------------------
-
-    @staticmethod
-    def _tokenize_image_identifier(identifier: str) -> Set[str]:
-        if not identifier:
-            return set()
-        return {
-            token
-            for token in re.split(r"[^A-Za-z0-9]+", identifier.lower())
-            if token
-        }
-
-    @staticmethod
-    def _safe_get_defined_tag(resource: Any, namespace: str, key: str) -> Optional[str]:
-        tags = getattr(resource, "defined_tags", None)
-        if not isinstance(tags, dict):
-            return None
-        ns = tags.get(namespace)
-        if not isinstance(ns, dict):
-            return None
-        value = ns.get(key)
-        if isinstance(value, str) and value:
-            return value
-        return None
-
-    @classmethod
-    def _get_image_type(cls, resource: Any) -> Optional[str]:
-        for namespace in ("ics_images", "icm_images"):
-            image_type = cls._safe_get_defined_tag(resource, namespace, "type")
-            if image_type:
-                return image_type
-        return None
-
-    @classmethod
-    def _get_image_release(cls, resource: Any) -> Optional[str]:
-        for namespace in ("ics_images", "icm_images"):
-            release = cls._safe_get_defined_tag(resource, namespace, "release")
-            if release:
-                return release
-        return None
-
-    @classmethod
-    def _image_matches_identifier(cls, identifier: str, image: Any) -> bool:
-        if not identifier:
-            return False
-
-        norm_identifier = identifier.strip().lower()
-        if not norm_identifier:
-            return False
-
-        image_id = getattr(image, "id", None)
-        if isinstance(image_id, str) and image_id.lower() == norm_identifier:
-            return True
-
-        display_name = getattr(image, "display_name", None)
-        if isinstance(display_name, str) and display_name.strip().lower() == norm_identifier:
-            return True
-
-        identifier_tokens = cls._tokenize_image_identifier(identifier)
-        if display_name:
-            display_tokens = cls._tokenize_image_identifier(display_name)
-            if identifier_tokens and display_tokens and identifier_tokens <= display_tokens:
-                return True
-
-        image_type = cls._get_image_type(image)
-        release = cls._get_image_release(image)
-        if identifier_tokens and image_type and release:
-            required = {image_type.lower(), release.lower()}
-            if required.issubset(identifier_tokens):
-                return True
-
-        if identifier_tokens and image_type and image_type.lower() in identifier_tokens:
-            return True
-
-        if identifier_tokens and release and release.lower() in identifier_tokens:
-            return True
-
-        return False
-
-    @classmethod
-    def _select_image_id_from_candidates(
-        cls, identifier: str, images: Iterable[Any]
-    ) -> Optional[str]:
-        for image in images:
-            if cls._image_matches_identifier(identifier, image):
-                image_id = getattr(image, "id", None)
-                if isinstance(image_id, str) and image_id:
-                    return image_id
-        return None
-
     def _resolve_image_name(
         self, context: CompartmentContext, instance: oci.core.models.Instance
     ) -> Optional[str]:
@@ -825,7 +734,6 @@ class NodePoolRecycler:
             return None
 
         compute_client = client.compute_client
-        images: List[Any] = []
         try:
             response = list_call_get_all_results(
                 compute_client.list_images,
@@ -834,7 +742,6 @@ class NodePoolRecycler:
                 sort_by="TIMECREATED",
                 sort_order="DESC",
             )
-            images.extend(response.data)
         except oci_exceptions.ServiceError as exc:
             message = (
                 "Failed to list images for display name '{name}' in compartment {compartment}: {error}".format(
@@ -843,49 +750,16 @@ class NodePoolRecycler:
                     error=exc.message,
                 )
             )
-            self.logger.warning(message)
-
-        match = self._select_image_id_from_candidates(image_identifier, images)
-        if match:
-            return match
-
-        try:
-            response = list_call_get_all_results(
-                compute_client.list_images,
-                compartment_id,
-                sort_by="TIMECREATED",
-                sort_order="DESC",
-            )
-        except oci_exceptions.ServiceError as exc:
-            message = (
-                "Failed to list images in compartment {compartment}: {error}".format(
-                    compartment=compartment_id,
-                    error=exc.message,
-                )
-            )
             self.logger.error(message)
             self._errors.append(message)
             return None
 
-        seen_ids = {
-            getattr(image, "id", None)
-            for image in images
-            if getattr(image, "id", None)
-        }
-
-        full_list: List[Any] = []
         for image in response.data:
-            image_id = getattr(image, "id", None)
-            if image_id in seen_ids:
-                continue
-            full_list.append(image)
-
-        match = self._select_image_id_from_candidates(image_identifier, full_list)
-        if match:
-            return match
+            if getattr(image, "display_name", None) == image_identifier:
+                return getattr(image, "id", None)
 
         message = (
-            "Unable to resolve image ID for identifier '{name}' in compartment {compartment}".format(
+            "Unable to resolve image ID for display name '{name}' in compartment {compartment}".format(
                 name=image_identifier,
                 compartment=compartment_id,
             )
