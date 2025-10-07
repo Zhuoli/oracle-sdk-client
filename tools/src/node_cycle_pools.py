@@ -2042,6 +2042,8 @@ class NodePoolRecycler:
             )
 
         try:
+            from oci.core.models import DetachInstancePoolInstanceDetails
+
             self.logger.info(
                 "Detaching instance %s (%s) from pool %s",
                 instance_plan.host_name,
@@ -2049,13 +2051,15 @@ class NodePoolRecycler:
                 instance_pool_id
             )
 
+            detach_details = DetachInstancePoolInstanceDetails(
+                instance_id=instance_plan.instance_id,
+                is_decrement_size=False,  # Pool will create replacement
+                is_auto_terminate=True,  # Terminate the detached instance
+            )
+
             response = cm_client.detach_instance_pool_instance(
                 instance_pool_id=instance_pool_id,
-                detach_instance_pool_instance_details={
-                    "instance_id": instance_plan.instance_id,
-                    "is_decrement_size": False,  # Pool will create replacement
-                    "is_auto_terminate": True,  # Terminate the detached instance
-                }
+                detach_instance_pool_instance_details=detach_details
             )
 
             return WorkRequestResult(
