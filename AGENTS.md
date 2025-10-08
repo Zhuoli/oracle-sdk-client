@@ -10,6 +10,7 @@ OCI SSH Sync generates bastion-ready SSH configs for Oracle Cloud Infrastructure
 
   client = create_oci_client(context.region, profile_name)
   ```
+- When mutating OCI resources, add explicit logs ahead of every write/put/delete call so operators can trace the side effects performed by the automation.
 - `tools/src/ssh_sync.py`: CLI entry point; reads `meta.yaml` and writes `ssh_config_<project>_<stage>.txt` under a runtime `ssh_configs/` directory.
 - `tools/tests/`: pytest suite mirroring module names; keep fixtures near their consumers.
 - `tools/pyproject.toml`, `poetry.lock`, `mypy.ini`, `setup.cfg`: single source for dependencies, formatting, type hints, and lint rules.

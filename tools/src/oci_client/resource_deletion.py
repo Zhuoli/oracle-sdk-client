@@ -10,7 +10,8 @@ from __future__ import annotations
 import argparse
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, Iterable, List, Optional
 
 import oci
 from oci.exceptions import ServiceError
@@ -55,6 +56,9 @@ class BucketDeletionCommand(BaseDeletionCommand):
 
     name = "bucket"
     help_text = "Delete an Object Storage bucket (removing all objects and versions first)."
+
+    _delete_batch_size = 1000
+    _max_delete_workers = 8
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
@@ -105,6 +109,7 @@ class BucketDeletionCommand(BaseDeletionCommand):
                 bucket_name=bucket_name,
                 versioning_state=str(bucket.versioning or "").lower(),
                 counts=counts,
+                console=console,
             )
         except ServiceError as exc:
             raise ResourceDeletionError(
@@ -115,6 +120,7 @@ class BucketDeletionCommand(BaseDeletionCommand):
             f"[green]Removed {counts.deleted_objects} objects and {counts.deleted_versions} versions.[/green]"
         )
 
+        console.print(f"[dim]Deleting bucket resource '{bucket_name}'...[/dim]")
         try:
             object_storage.delete_bucket(namespace, bucket_name)
         except ServiceError as exc:
@@ -142,6 +148,7 @@ class BucketDeletionCommand(BaseDeletionCommand):
         bucket_name: str,
         versioning_state: str,
         counts: _DeletionCounts,
+        console: Console,
     ) -> None:
         """Iterate through bucket contents and delete them safely."""
         versioning_enabled = versioning_state in {"enabled", "suspended"}
@@ -152,6 +159,7 @@ class BucketDeletionCommand(BaseDeletionCommand):
                 namespace=namespace,
                 bucket_name=bucket_name,
                 counts=counts,
+                console=console,
             )
         else:
             self._delete_current_objects(
@@ -159,6 +167,7 @@ class BucketDeletionCommand(BaseDeletionCommand):
                 namespace=namespace,
                 bucket_name=bucket_name,
                 counts=counts,
+                console=console,
             )
 
         # Ensure no residual current objects remain (handles versioning buckets too).
@@ -167,6 +176,7 @@ class BucketDeletionCommand(BaseDeletionCommand):
             namespace=namespace,
             bucket_name=bucket_name,
             counts=counts,
+            console=console,
         )
 
     def _delete_current_objects(
@@ -176,10 +186,12 @@ class BucketDeletionCommand(BaseDeletionCommand):
         namespace: str,
         bucket_name: str,
         counts: _DeletionCounts,
+        console: Console,
         start: Optional[str] = None,
     ) -> None:
         """Remove each current object version from the bucket."""
         next_start = start
+        pending: List[Dict[str, Optional[str]]] = []
 
         while True:
             response = object_storage.list_objects(
@@ -195,16 +207,33 @@ class BucketDeletionCommand(BaseDeletionCommand):
                 break
 
             for obj in objects:
-                object_storage.delete_object(
-                    namespace_name=namespace,
-                    bucket_name=bucket_name,
-                    object_name=getattr(obj, "name", getattr(obj, "object_name", "")),
-                )
-                counts.deleted_objects += 1
+                object_name = getattr(obj, "name", getattr(obj, "object_name", ""))
+                pending.append({"object_name": object_name})
+
+                if len(pending) >= self._delete_batch_size:
+                    self._process_delete_batch(
+                        object_storage=object_storage,
+                        namespace=namespace,
+                        bucket_name=bucket_name,
+                        items=pending,
+                        console=console,
+                        counts=counts,
+                        is_version_batch=False,
+                    )
 
             next_start = getattr(object_collection, "next_start_with", None)
             if not next_start:
                 break
+
+        self._process_delete_batch(
+            object_storage=object_storage,
+            namespace=namespace,
+            bucket_name=bucket_name,
+            items=pending,
+            console=console,
+            counts=counts,
+            is_version_batch=False,
+        )
 
     def _delete_object_versions(
         self,
@@ -213,9 +242,11 @@ class BucketDeletionCommand(BaseDeletionCommand):
         namespace: str,
         bucket_name: str,
         counts: _DeletionCounts,
+        console: Console,
     ) -> None:
         """Remove all versions from a versioned bucket."""
         next_start: Optional[str] = None
+        pending: List[Dict[str, Optional[str]]] = []
 
         while True:
             response = object_storage.list_object_versions(
@@ -233,22 +264,123 @@ class BucketDeletionCommand(BaseDeletionCommand):
             for version in versions:
                 object_name = getattr(version, "name", getattr(version, "object_name", ""))
                 version_id = getattr(version, "version_id", None)
+                pending.append({"object_name": object_name, "version_id": version_id})
 
-                delete_kwargs = {
-                    "namespace_name": namespace,
-                    "bucket_name": bucket_name,
-                    "object_name": object_name,
-                }
-                if version_id:
-                    delete_kwargs["version_id"] = version_id
-
-                object_storage.delete_object(**delete_kwargs)
-                counts.deleted_versions += 1
+                if len(pending) >= self._delete_batch_size:
+                    self._process_delete_batch(
+                        object_storage=object_storage,
+                        namespace=namespace,
+                        bucket_name=bucket_name,
+                        items=pending,
+                        console=console,
+                        counts=counts,
+                        is_version_batch=True,
+                    )
 
             next_start = getattr(version_collection, "next_start_with", None)
             if not next_start:
                 break
 
+        self._process_delete_batch(
+            object_storage=object_storage,
+            namespace=namespace,
+            bucket_name=bucket_name,
+            items=pending,
+            console=console,
+            counts=counts,
+            is_version_batch=True,
+        )
+
+    def _process_delete_batch(
+        self,
+        *,
+        object_storage: oci.object_storage.ObjectStorageClient,
+        namespace: str,
+        bucket_name: str,
+        items: List[Dict[str, Optional[str]]],
+        console: Console,
+        counts: _DeletionCounts,
+        is_version_batch: bool,
+    ) -> None:
+        """Flush pending objects using concurrent delete requests."""
+        if not items:
+            return
+
+        action = "object versions" if is_version_batch else "objects"
+        console.print(
+            f"[dim]Deleting batch of {len(items)} {action} from bucket '{bucket_name}'[/dim]"
+        )
+
+        batch = list(items)
+
+        errors: List[str] = []
+        max_workers = min(self._max_delete_workers, len(batch))
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(
+                    self._delete_single_object,
+                    object_storage,
+                    namespace,
+                    bucket_name,
+                    item,
+                    console,
+                ): item
+                for item in batch
+            }
+
+            for future in as_completed(future_map):
+                item = future_map[future]
+                try:
+                    future.result()
+                except ServiceError as exc:
+                    errors.append(
+                        f"{item['object_name']}: {exc.code} - {exc.message}"
+                    )
+                except Exception as exc:  # pragma: no cover - unexpected
+                    errors.append(f"{item['object_name']}: {exc}")
+
+        if errors:
+            raise ResourceDeletionError(
+                f"Failed to delete {len(errors)} {action}: {errors[0]}"
+            )
+
+        if is_version_batch:
+            counts.deleted_versions += len(batch)
+        else:
+            counts.deleted_objects += len(batch)
+
+        items.clear()
+
+    def _delete_single_object(
+        self,
+        object_storage: oci.object_storage.ObjectStorageClient,
+        namespace: str,
+        bucket_name: str,
+        item: Dict[str, Optional[str]],
+        console: Console,
+    ) -> None:
+        """Delete a single object or object version."""
+        object_name = item["object_name"]
+        version_id = item.get("version_id")
+
+        if version_id:
+            console.print(
+                f"[dim]Deleting object '{object_name}' (version '{version_id}')[/dim]"
+            )
+            object_storage.delete_object(
+                namespace_name=namespace,
+                bucket_name=bucket_name,
+                object_name=object_name,
+                version_id=version_id,
+            )
+        else:
+            console.print(f"[dim]Deleting object '{object_name}'[/dim]")
+            object_storage.delete_object(
+                namespace_name=namespace,
+                bucket_name=bucket_name,
+                object_name=object_name,
+            )
 
 def get_deletion_commands() -> List[BaseDeletionCommand]:
     """Return the list of registered deletion commands."""

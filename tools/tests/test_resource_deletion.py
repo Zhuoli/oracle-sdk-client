@@ -25,6 +25,7 @@ def make_console() -> Console:
 
 def test_bucket_deletion_removes_versions_and_bucket():
     command = BucketDeletionCommand()
+    command._max_delete_workers = 1
     object_storage = Mock()
     object_storage.get_namespace.return_value = SimpleNamespace(data="namespace")
     object_storage.get_bucket.return_value = SimpleNamespace(data=SimpleNamespace(versioning="Enabled"))
@@ -60,6 +61,7 @@ def test_bucket_deletion_removes_versions_and_bucket():
 
 def test_bucket_deletion_handles_standard_bucket_objects():
     command = BucketDeletionCommand()
+    command._max_delete_workers = 1
     object_storage = Mock()
     object_storage.get_namespace.return_value = SimpleNamespace(data="namespace")
     object_storage.get_bucket.return_value = SimpleNamespace(data=SimpleNamespace(versioning="Disabled"))
@@ -82,7 +84,6 @@ def test_bucket_deletion_handles_standard_bucket_objects():
 
     command.execute(client, args, make_console())
 
-    # Only current objects should be deleted since versioning is disabled.
     assert object_storage.list_object_versions.call_count == 0
     assert object_storage.delete_object.call_count == 3
     object_storage.delete_bucket.assert_called_once_with("namespace", "bucket")
