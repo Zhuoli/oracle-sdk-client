@@ -2,40 +2,39 @@
 # SSH Configuration Generator for Oracle Deployment Orchestrator
 # Provides convenient commands for development and SSH config generation
 
+CMD_COLOR=\033[1;36m
+DESC_COLOR=\033[0;37m
+TITLE_COLOR=\033[1;33m
+RESET=\033[0m
+
 .PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates recycle-node-pools delete-bucket delete-oke-cluster
 
 # Default target
 help:
-	@echo "🔧 OCI SSH Sync - Available Commands"
-	@echo ""
-	@echo "Setup Commands:"
-	@echo "  install       Install dependencies using Poetry"
-	@echo "  dev-setup     Complete development setup (install + pre-commit hooks)"
-	@echo ""
-	@echo "SSH Sync Commands:"
-	@echo "  ssh-sync      Generate SSH config for OCI instances"
-	@echo "  ssh-help      Show SSH sync configuration help"
-	@echo "  image-updates Check for newer images for compute instances (by project/stage)"
-	@echo "  recycle-node-pools CSV=<file> [DRY_RUN=1] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)]"
-	@echo "  delete-bucket PROJECT=<name> STAGE=<env> REGION=<id> BUCKET=<bucket> [NAMESPACE=<override>]"
-	@echo "  delete-oke-cluster PROJECT=<name> STAGE=<env> REGION=<id> CLUSTER_ID=<ocid> [SKIP_NODE_POOLS=1]"
-	@echo ""
-	@echo "Development Commands:"
-	@echo "  test          Run all tests"
-	@echo "  test-verbose  Run tests with verbose output"
-	@echo "  format        Format code with black and isort"
-	@echo "  lint          Run linting with flake8"
-	@echo "  type-check    Run type checking with mypy"
-	@echo "  clean         Clean up temporary files and caches"
-	@echo ""
-	@echo "SSH Sync Configuration:"
-	@echo "  Uses meta.yaml configuration file for project/stage/region mapping"
-	@echo ""
-	@echo "Example:"
-	@echo "  make ssh-sync PROJECT=remote-observer STAGE=dev"
-	@echo ""
-	@echo "For detailed configuration help:"
-	@echo "  make ssh-help"
+	@printf "$(TITLE_COLOR)🔧 OCI SSH Sync - Available Commands$(RESET)\n\n"
+	@printf "$(TITLE_COLOR)Setup Commands:$(RESET)\n"
+	@printf "  $(CMD_COLOR)install$(RESET)       $(DESC_COLOR)Install dependencies using Poetry$(RESET)\n"
+	@printf "  $(CMD_COLOR)dev-setup$(RESET)     $(DESC_COLOR)Complete development setup (install + pre-commit hooks)$(RESET)\n\n"
+	@printf "$(TITLE_COLOR)SSH Sync Commands:$(RESET)\n"
+	@printf "  $(CMD_COLOR)ssh-sync$(RESET)      $(DESC_COLOR)Generate SSH config for OCI instances$(RESET)\n"
+	@printf "  $(CMD_COLOR)ssh-help$(RESET)      $(DESC_COLOR)Show SSH sync configuration help$(RESET)\n"
+	@printf "  $(CMD_COLOR)image-updates$(RESET) $(DESC_COLOR)Check for newer images for compute instances (by project/stage)$(RESET)\n"
+	@printf "  $(CMD_COLOR)recycle-node-pools$(RESET) $(DESC_COLOR)CSV=<file> [DRY_RUN=1] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)]$(RESET)\n"
+	@printf "  $(CMD_COLOR)delete-bucket$(RESET) $(DESC_COLOR)PROJECT=<name> STAGE=<env> REGION=<id> BUCKET=<bucket> [NAMESPACE=<override>]$(RESET)\n"
+	@printf "  $(CMD_COLOR)delete-oke-cluster$(RESET) $(DESC_COLOR)PROJECT=<name> STAGE=<env> REGION=<id> CLUSTER_ID=<ocid> [SKIP_NODE_POOLS=1]$(RESET)\n\n"
+	@printf "$(TITLE_COLOR)Development Commands:$(RESET)\n"
+	@printf "  $(CMD_COLOR)test$(RESET)          $(DESC_COLOR)Run all tests$(RESET)\n"
+	@printf "  $(CMD_COLOR)test-verbose$(RESET)  $(DESC_COLOR)Run tests with verbose output$(RESET)\n"
+	@printf "  $(CMD_COLOR)format$(RESET)        $(DESC_COLOR)Format code with black and isort$(RESET)\n"
+	@printf "  $(CMD_COLOR)lint$(RESET)          $(DESC_COLOR)Run linting with flake8$(RESET)\n"
+	@printf "  $(CMD_COLOR)type-check$(RESET)    $(DESC_COLOR)Run type checking with mypy$(RESET)\n"
+	@printf "  $(CMD_COLOR)clean$(RESET)         $(DESC_COLOR)Clean up temporary files and caches$(RESET)\n\n"
+	@printf "$(TITLE_COLOR)SSH Sync Configuration:$(RESET)\n"
+	@printf "  $(DESC_COLOR)Uses meta.yaml configuration file for project/stage/region mapping$(RESET)\n\n"
+	@printf "$(TITLE_COLOR)Example:$(RESET)\n"
+	@printf "  $(DESC_COLOR)make ssh-sync PROJECT=remote-observer STAGE=dev$(RESET)\n\n"
+	@printf "$(TITLE_COLOR)For detailed configuration help:$(RESET)\n"
+	@printf "  $(DESC_COLOR)make ssh-help$(RESET)\n"
 
 # Installation and setup
 install:
