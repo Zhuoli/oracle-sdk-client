@@ -2,7 +2,7 @@
 # SSH Configuration Generator for Oracle Deployment Orchestrator
 # Provides convenient commands for development and SSH config generation
 
-.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates recycle-node-pools delete-bucket
+.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates recycle-node-pools delete-bucket delete-oke-cluster
 
 # Default target
 help:
@@ -18,6 +18,7 @@ help:
 	@echo "  image-updates Check for newer images for compute instances (by project/stage)"
 	@echo "  recycle-node-pools CSV=<file> [DRY_RUN=1] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)]"
 	@echo "  delete-bucket PROJECT=<name> STAGE=<env> REGION=<id> BUCKET=<bucket> [NAMESPACE=<override>]"
+	@echo "  delete-oke-cluster PROJECT=<name> STAGE=<env> REGION=<id> CLUSTER_ID=<ocid> [SKIP_NODE_POOLS=1]"
 	@echo ""
 	@echo "Development Commands:"
 	@echo "  test          Run all tests"
@@ -193,6 +194,21 @@ delete-bucket:
 		bucket \
 		--bucket-name "$(BUCKET)" \
 		$$( [ -n "$(NAMESPACE)" ] && printf -- "--namespace %s" "$(NAMESPACE)" )
+
+delete-oke-cluster:
+	@if [ -z "$(PROJECT)" ] || [ -z "$(STAGE)" ] || [ -z "$(REGION)" ] || [ -z "$(CLUSTER_ID)" ]; then \
+		echo "❌ Error: PROJECT, STAGE, REGION, and CLUSTER_ID parameters are required"; \
+		echo "Usage: make delete-oke-cluster PROJECT=<project> STAGE=<stage> REGION=<region> CLUSTER_ID=<ocid> [SKIP_NODE_POOLS=1]"; \
+		exit 1; \
+	fi
+	@echo "🗑️  Deleting OKE cluster '$(CLUSTER_ID)'..."
+	cd tools && poetry run python src/delete_resources.py \
+		--project "$(PROJECT)" \
+		--stage "$(STAGE)" \
+		--region "$(REGION)" \
+		oke-cluster \
+		--cluster-id "$(CLUSTER_ID)" \
+		$$( [ "$(SKIP_NODE_POOLS)" = "1" ] || [ "$(SKIP_NODE_POOLS)" = "true" ] || [ "$(SKIP_NODE_POOLS)" = "TRUE" ] || [ "$(SKIP_NODE_POOLS)" = "yes" ] || [ "$(SKIP_NODE_POOLS)" = "YES" ] && printf -- "--skip-node-pools" )
 
 # Testing
 test:

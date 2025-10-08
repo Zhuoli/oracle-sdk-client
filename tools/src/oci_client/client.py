@@ -162,6 +162,7 @@ class OCIClient:
         self._bastion_client: Optional[oci.bastion.BastionClient] = None
         self._network_client: Optional[oci.core.VirtualNetworkClient] = None
         self._object_storage_client: Optional[oci.object_storage.ObjectStorageClient] = None
+        self._container_engine_client: Optional[oci.container_engine.ContainerEngineClient] = None
 
         # Authenticate
         self._authenticate()
@@ -218,6 +219,15 @@ class OCIClient:
                 self.oci_config, signer=self.signer, retry_strategy=self.retry_strategy
             )
         return self._object_storage_client
+
+    @property
+    def container_engine_client(self) -> oci.container_engine.ContainerEngineClient:
+        """Lazy-load OKE container engine client."""
+        if not self._container_engine_client:
+            self._container_engine_client = oci.container_engine.ContainerEngineClient(
+                self.oci_config, signer=self.signer, retry_strategy=self.retry_strategy
+            )
+        return self._container_engine_client
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def test_connection(self) -> bool:

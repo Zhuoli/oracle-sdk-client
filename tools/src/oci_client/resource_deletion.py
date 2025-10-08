@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Iterable, List, Optional
 
@@ -382,6 +383,211 @@ class BucketDeletionCommand(BaseDeletionCommand):
                 object_name=object_name,
             )
 
+
+class OKEDeletionCommand(BaseDeletionCommand):
+    """Delete an OCI Container Engine for Kubernetes cluster."""
+
+    name = "oke-cluster"
+    help_text = "Delete an OKE cluster (optionally deleting associated node pools first)."
+
+    _work_request_poll_seconds = 5
+    _work_request_max_attempts = 60
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--cluster-id",
+            required=True,
+            help="OCID of the OKE cluster to delete.",
+        )
+        parser.add_argument(
+            "--skip-node-pools",
+            action="store_true",
+            help="Skip deleting node pools before deleting the cluster.",
+        )
+
+    def execute(self, client: OCIClient, args: argparse.Namespace, console: Console) -> None:
+        cluster_id: str = args.cluster_id
+        skip_node_pools: bool = getattr(args, "skip_node_pools", False)
+
+        ce_client = client.container_engine_client
+        console.print(f"[bold blue]Deleting OKE cluster '{cluster_id}'[/bold blue]")
+
+        try:
+            cluster = ce_client.get_cluster(cluster_id).data
+        except ServiceError as exc:
+            if exc.status == 404:
+                console.print(
+                    f"[yellow]Cluster '{cluster_id}' not found. Nothing to delete.[/yellow]"
+                )
+                return
+            raise ResourceDeletionError(
+                f"Failed to look up cluster '{cluster_id}': {exc.code} - {exc.message}"
+            ) from exc
+
+        cluster_name = getattr(cluster, "name", cluster_id)
+        compartment_id = getattr(cluster, "compartment_id", None)
+        console.print(
+            f"[dim]Cluster name: {cluster_name}; compartment: {compartment_id or '<unknown>'}[/dim]"
+        )
+
+        if not skip_node_pools:
+            self._delete_node_pools(
+                ce_client=ce_client,
+                cluster_id=cluster_id,
+                compartment_id=compartment_id,
+                console=console,
+            )
+        else:
+            console.print("[yellow]Skipping node pool deletion per user request.[/yellow]")
+
+        console.print(f"[dim]Initiating cluster deletion for '{cluster_name}'[/dim]")
+        try:
+            response = ce_client.delete_cluster(cluster_id)
+        except ServiceError as exc:
+            if exc.status == 404:
+                console.print(
+                    f"[yellow]Cluster '{cluster_name}' already deleted.[/yellow]"
+                )
+                return
+            raise ResourceDeletionError(
+                f"Failed to delete cluster '{cluster_name}': {exc.code} - {exc.message}"
+            ) from exc
+
+        work_request_id = getattr(response, "headers", {}).get("opc-work-request-id")
+        if work_request_id:
+            self._wait_for_work_request(
+                ce_client=ce_client,
+                work_request_id=work_request_id,
+                console=console,
+                resource_label=f"Cluster '{cluster_name}'",
+            )
+        else:
+            console.print(
+                "[yellow]No work request ID returned. Assuming deletion succeeds without tracking.[/yellow]"
+            )
+
+        console.print(f"[bold green]✓ Cluster '{cluster_name}' deleted successfully.[/bold green]")
+
+    def _delete_node_pools(
+        self,
+        *,
+        ce_client: oci.container_engine.ContainerEngineClient,
+        cluster_id: str,
+        compartment_id: Optional[str],
+        console: Console,
+    ) -> None:
+        node_pools = list(
+            self._iter_node_pools(
+                ce_client=ce_client,
+                cluster_id=cluster_id,
+                compartment_id=compartment_id,
+            )
+        )
+
+        if not node_pools:
+            console.print("[dim]No node pools found for cluster.[/dim]")
+            return
+
+        console.print(f"[dim]Deleting {len(node_pools)} node pool(s) before cluster deletion.[/dim]")
+
+        for node_pool in node_pools:
+            node_pool_id = getattr(node_pool, "id", None)
+            node_pool_name = getattr(node_pool, "name", node_pool_id)
+            if not node_pool_id:
+                continue
+
+            console.print(
+                f"[dim]Deleting node pool '{node_pool_name}' ({node_pool_id})[/dim]"
+            )
+            try:
+                response = ce_client.delete_node_pool(node_pool_id)
+            except ServiceError as exc:
+                if exc.status == 404:
+                    console.print(
+                        f"[yellow]Node pool '{node_pool_name}' already deleted.[/yellow]"
+                    )
+                    continue
+                raise ResourceDeletionError(
+                    f"Failed to delete node pool '{node_pool_name}': {exc.code} - {exc.message}"
+                ) from exc
+
+            work_request_id = getattr(response, "headers", {}).get("opc-work-request-id")
+            if work_request_id:
+                self._wait_for_work_request(
+                    ce_client=ce_client,
+                    work_request_id=work_request_id,
+                    console=console,
+                    resource_label=f"Node pool '{node_pool_name}'",
+                )
+            else:
+                console.print(
+                    f"[yellow]No work request ID returned for node pool '{node_pool_name}'.[/yellow]"
+                )
+
+    def _iter_node_pools(
+        self,
+        *,
+        ce_client: oci.container_engine.ContainerEngineClient,
+        cluster_id: str,
+        compartment_id: Optional[str],
+    ):
+        request_kwargs = {"cluster_id": cluster_id}
+        if compartment_id:
+            request_kwargs["compartment_id"] = compartment_id
+
+        response = ce_client.list_node_pools(**request_kwargs)
+
+        while True:
+            for node_pool in getattr(response, "data", []) or []:
+                yield node_pool
+
+            next_page = getattr(response, "next_page", None)
+            if not next_page:
+                break
+
+            request_kwargs["page"] = next_page
+            response = ce_client.list_node_pools(**request_kwargs)
+
+    def _wait_for_work_request(
+        self,
+        *,
+        ce_client: oci.container_engine.ContainerEngineClient,
+        work_request_id: str,
+        console: Console,
+        resource_label: str,
+    ) -> None:
+        console.print(
+            f"[dim]Waiting for work request '{work_request_id}' ({resource_label})[/dim]"
+        )
+
+        attempts = 0
+        while attempts < self._work_request_max_attempts:
+            attempts += 1
+            response = ce_client.get_work_request(work_request_id)
+            status = getattr(getattr(response, "data", None), "status", None)
+
+            if status in {"SUCCEEDED", "SUCCEEDED_WITH_WARNINGS"}:
+                console.print(f"[green]✓ {resource_label} deletion completed.[/green]")
+                return
+
+            if status in {"FAILED", "CANCELED"}:
+                errors_response = ce_client.list_work_request_errors(work_request_id)
+                errors = getattr(errors_response, "data", []) or []
+                error_message = getattr(errors[0], "message", status) if errors else status
+                raise ResourceDeletionError(
+                    f"Work request '{work_request_id}' for {resource_label} ended with status {status}: {error_message}"
+                )
+
+            console.print(
+                f"[dim]Work request '{work_request_id}' status {status}. Polling again in {self._work_request_poll_seconds}s...[/dim]"
+            )
+            time.sleep(self._work_request_poll_seconds)
+
+        raise ResourceDeletionError(
+            f"Timed out waiting for work request '{work_request_id}' to complete for {resource_label}."
+        )
+
+
 def get_deletion_commands() -> List[BaseDeletionCommand]:
     """Return the list of registered deletion commands."""
-    return [BucketDeletionCommand()]
+    return [BucketDeletionCommand(), OKEDeletionCommand()]

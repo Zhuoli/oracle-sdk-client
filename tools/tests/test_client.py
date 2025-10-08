@@ -101,6 +101,16 @@ class TestOCIClient:
             _ = mock_client.network_client
             mock_network.assert_called_once()
 
+    def test_lazy_loading_container_engine_client(self, mock_client):
+        """Test lazy loading of container engine client."""
+        with patch(
+            "src.oci_client.client.oci.container_engine.ContainerEngineClient"
+        ) as mock_ce:
+            assert mock_client._container_engine_client is None
+
+            _ = mock_client.container_engine_client
+            mock_ce.assert_called_once()
+
     @patch("src.oci_client.client.console")
     def test_test_connection_success(self, mock_console, mock_client):
         """Test successful connection test."""

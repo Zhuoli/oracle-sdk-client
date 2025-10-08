@@ -5,7 +5,11 @@ import pytest
 from oci.exceptions import ServiceError
 from rich.console import Console
 
-from src.oci_client.resource_deletion import BucketDeletionCommand, ResourceDeletionError
+from src.oci_client.resource_deletion import (
+    BucketDeletionCommand,
+    OKEDeletionCommand,
+    ResourceDeletionError,
+)
 
 
 class FakeCollection:
@@ -123,6 +127,116 @@ def test_bucket_deletion_surfaces_remaining_objects_error():
 
     client = SimpleNamespace(object_storage_client=object_storage)
     args = SimpleNamespace(bucket_name="bucket", namespace=None)
+
+    with pytest.raises(ResourceDeletionError):
+        command.execute(client, args, make_console())
+
+
+def test_oke_cluster_deletion_with_node_pools():
+    command = OKEDeletionCommand()
+    command._work_request_poll_seconds = 0
+    command._work_request_max_attempts = 3
+
+    ce_client = Mock()
+    ce_client.get_cluster.return_value = SimpleNamespace(
+        data=SimpleNamespace(name="cluster-name", compartment_id="compartment-id")
+    )
+    ce_client.list_node_pools.return_value = SimpleNamespace(
+        data=[
+            SimpleNamespace(id="nodepool1", name="np1"),
+            SimpleNamespace(id="nodepool2", name="np2"),
+        ],
+        next_page=None,
+    )
+    ce_client.delete_node_pool.side_effect = [
+        SimpleNamespace(headers={"opc-work-request-id": "wr-node-1"}),
+        SimpleNamespace(headers={"opc-work-request-id": "wr-node-2"}),
+    ]
+    ce_client.delete_cluster.return_value = SimpleNamespace(
+        headers={"opc-work-request-id": "wr-cluster"}
+    )
+    ce_client.get_work_request.side_effect = [
+        SimpleNamespace(data=SimpleNamespace(status="SUCCEEDED")),
+        SimpleNamespace(data=SimpleNamespace(status="SUCCEEDED")),
+        SimpleNamespace(data=SimpleNamespace(status="SUCCEEDED")),
+    ]
+    ce_client.list_work_request_errors.return_value = SimpleNamespace(data=[])
+
+    client = SimpleNamespace(container_engine_client=ce_client)
+    args = SimpleNamespace(cluster_id="ocid1.cluster.oc1..example", skip_node_pools=False)
+
+    command.execute(client, args, make_console())
+
+    assert ce_client.delete_node_pool.call_count == 2
+    ce_client.delete_cluster.assert_called_once_with("ocid1.cluster.oc1..example")
+
+
+def test_oke_cluster_deletion_skips_node_pools():
+    command = OKEDeletionCommand()
+    command._work_request_poll_seconds = 0
+
+    ce_client = Mock()
+    ce_client.get_cluster.return_value = SimpleNamespace(
+        data=SimpleNamespace(name="cluster-name", compartment_id="compartment-id")
+    )
+    ce_client.delete_cluster.return_value = SimpleNamespace(
+        headers={"opc-work-request-id": "wr-cluster"}
+    )
+    ce_client.get_work_request.return_value = SimpleNamespace(
+        data=SimpleNamespace(status="SUCCEEDED")
+    )
+    ce_client.list_work_request_errors.return_value = SimpleNamespace(data=[])
+
+    client = SimpleNamespace(container_engine_client=ce_client)
+    args = SimpleNamespace(cluster_id="ocid1.cluster.oc1..example", skip_node_pools=True)
+
+    command.execute(client, args, make_console())
+
+    ce_client.list_node_pools.assert_not_called()
+    ce_client.delete_cluster.assert_called_once()
+
+
+def test_oke_cluster_deletion_missing_cluster():
+    command = OKEDeletionCommand()
+    ce_client = Mock()
+    ce_client.get_cluster.side_effect = ServiceError(
+        status=404,
+        code="NotFound",
+        headers={},
+        message="missing",
+    )
+
+    client = SimpleNamespace(container_engine_client=ce_client)
+    args = SimpleNamespace(cluster_id="ocid1.cluster.oc1..missing", skip_node_pools=False)
+
+    # Should not raise when cluster is already gone
+    command.execute(client, args, make_console())
+
+    ce_client.delete_cluster.assert_not_called()
+
+
+def test_oke_cluster_deletion_work_request_failure():
+    command = OKEDeletionCommand()
+    command._work_request_poll_seconds = 0
+    command._work_request_max_attempts = 2
+
+    ce_client = Mock()
+    ce_client.get_cluster.return_value = SimpleNamespace(
+        data=SimpleNamespace(name="cluster-name", compartment_id="compartment-id")
+    )
+    ce_client.list_node_pools.return_value = SimpleNamespace(data=[], next_page=None)
+    ce_client.delete_cluster.return_value = SimpleNamespace(
+        headers={"opc-work-request-id": "wr-cluster"}
+    )
+    ce_client.get_work_request.side_effect = [
+        SimpleNamespace(data=SimpleNamespace(status="FAILED")),
+    ]
+    ce_client.list_work_request_errors.return_value = SimpleNamespace(
+        data=[SimpleNamespace(message="boom")]
+    )
+
+    client = SimpleNamespace(container_engine_client=ce_client)
+    args = SimpleNamespace(cluster_id="ocid1.cluster.oc1..example", skip_node_pools=False)
 
     with pytest.raises(ResourceDeletionError):
         command.execute(client, args, make_console())
