@@ -161,6 +161,7 @@ class OCIClient:
         self._identity_client: Optional[oci.identity.IdentityClient] = None
         self._bastion_client: Optional[oci.bastion.BastionClient] = None
         self._network_client: Optional[oci.core.VirtualNetworkClient] = None
+        self._object_storage_client: Optional[oci.object_storage.ObjectStorageClient] = None
 
         # Authenticate
         self._authenticate()
@@ -208,6 +209,15 @@ class OCIClient:
                 self.oci_config, signer=self.signer, retry_strategy=self.retry_strategy
             )
         return self._network_client
+
+    @property
+    def object_storage_client(self) -> oci.object_storage.ObjectStorageClient:
+        """Lazy-load object storage client."""
+        if not self._object_storage_client:
+            self._object_storage_client = oci.object_storage.ObjectStorageClient(
+                self.oci_config, signer=self.signer, retry_strategy=self.retry_strategy
+            )
+        return self._object_storage_client
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def test_connection(self) -> bool:

@@ -2,7 +2,7 @@
 # SSH Configuration Generator for Oracle Deployment Orchestrator
 # Provides convenient commands for development and SSH config generation
 
-.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates recycle-node-pools
+.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates recycle-node-pools delete-bucket
 
 # Default target
 help:
@@ -17,6 +17,7 @@ help:
 	@echo "  ssh-help      Show SSH sync configuration help"
 	@echo "  image-updates Check for newer images for compute instances (by project/stage)"
 	@echo "  recycle-node-pools CSV=<file> [DRY_RUN=1] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)]"
+	@echo "  delete-bucket PROJECT=<name> STAGE=<env> REGION=<id> BUCKET=<bucket> [NAMESPACE=<override>]"
 	@echo ""
 	@echo "Development Commands:"
 	@echo "  test          Run all tests"
@@ -177,6 +178,21 @@ recycle-node-pools:
 		META_FLAG="--meta-file ../$(META)"; \
 	fi; \
 	cd tools && poetry run python src/recycle_node_pools.py --csv-path "../$(CSV)" $$POLL_FLAG $$CONFIG_FLAG $$META_FLAG $$DRY_RUN_FLAG
+
+delete-bucket:
+	@if [ -z "$(PROJECT)" ] || [ -z "$(STAGE)" ] || [ -z "$(REGION)" ] || [ -z "$(BUCKET)" ]; then \
+		echo "❌ Error: PROJECT, STAGE, REGION, and BUCKET parameters are required"; \
+		echo "Usage: make delete-bucket PROJECT=<project> STAGE=<stage> REGION=<region> BUCKET=<bucket> [NAMESPACE=<namespace>]"; \
+		exit 1; \
+	fi
+	@echo "🗑️  Deleting bucket '$(BUCKET)' from namespace $${NAMESPACE:-<tenancy default>}..."
+	cd tools && poetry run python src/delete_resources.py \
+		--project "$(PROJECT)" \
+		--stage "$(STAGE)" \
+		--region "$(REGION)" \
+		bucket \
+		--bucket-name "$(BUCKET)" \
+		$$( [ -n "$(NAMESPACE)" ] && printf -- "--namespace %s" "$(NAMESPACE)" )
 
 # Testing
 test:
