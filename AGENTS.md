@@ -3,7 +3,13 @@
 OCI SSH Sync generates bastion-ready SSH configs for Oracle Cloud Infrastructure. Use this guide to align contributions with the current tooling.
 
 ## Project Structure & Module Organization
-- `tools/src/oci_client/`: reusable client library (auth, models, utils).
+- `tools/src/oci_client/`: reusable client library (auth, models, utils). All developers and automation, including this LLM agent, must reuse its helpers for OCI client initialization so authentication stays consistent. For example:
+  ```python
+  # Leverage ssh_sync's session-token workflow so operators authenticate the same way here.
+  profile_name = setup_session_token(context.project, context.stage, context.region)
+
+  client = create_oci_client(context.region, profile_name)
+  ```
 - `tools/src/ssh_sync.py`: CLI entry point; reads `meta.yaml` and writes `ssh_config_<project>_<stage>.txt` under a runtime `ssh_configs/` directory.
 - `tools/tests/`: pytest suite mirroring module names; keep fixtures near their consumers.
 - `tools/pyproject.toml`, `poetry.lock`, `mypy.ini`, `setup.cfg`: single source for dependencies, formatting, type hints, and lint rules.
