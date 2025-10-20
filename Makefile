@@ -7,7 +7,7 @@ DESC_COLOR=\033[0;37m
 TITLE_COLOR=\033[1;33m
 RESET=\033[0m
 
-.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates recycle-node-pools delete-bucket delete-oke-cluster
+.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates recycle-node-pools delete-bucket delete-oke-cluster oke-version-report
 
 # Default target
 help:
@@ -17,6 +17,7 @@ help:
 	@printf "  $(CMD_COLOR)dev-setup$(RESET)     $(DESC_COLOR)Complete development setup (install + pre-commit hooks)$(RESET)\n\n"
 	@printf "$(TITLE_COLOR)SSH Sync Commands:$(RESET)\n"
 	@printf "  $(CMD_COLOR)ssh-sync$(RESET)      $(DESC_COLOR)Generate SSH config for OCI instances$(RESET)\n"
+	@printf "  $(CMD_COLOR)oke-version-report$(RESET) $(DESC_COLOR)Generate HTML report of OKE cluster and node pool versions$(RESET)\n"
 	@printf "  $(CMD_COLOR)ssh-help$(RESET)      $(DESC_COLOR)Show SSH sync configuration help$(RESET)\n"
 	@printf "  $(CMD_COLOR)image-updates$(RESET) $(DESC_COLOR)Check for newer images for compute instances (by project/stage)$(RESET)\n"
 	@printf "  $(CMD_COLOR)recycle-node-pools$(RESET) $(DESC_COLOR)CSV=<file> [DRY_RUN=1] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)]$(RESET)\n"
@@ -66,6 +67,29 @@ ssh-sync:
 		exit 1; \
 	fi
 	cd tools && poetry run python src/ssh_sync.py $(PROJECT) $(STAGE)
+
+oke-version-report:
+	@echo "📄 Generating OKE version HTML report..."
+	@if [ -z "$(PROJECT)" ] || [ -z "$(STAGE)" ]; then \
+		echo "❌ Error: PROJECT and STAGE parameters are required"; \
+		echo "Usage: make oke-version-report PROJECT=<project_name> STAGE=<stage> [META=tools/meta.yaml] [OUTPUT_DIR=reports]"; \
+		exit 1; \
+	fi
+	@META_FLAG=""; \
+	if [ -n "$(META)" ]; then \
+		case "$(META)" in \
+			/*) META_FLAG="--config-file $(META)";; \
+			*) META_FLAG="--config-file ../$(META)";; \
+		esac; \
+	fi; \
+	OUTPUT_FLAG=""; \
+	if [ -n "$(OUTPUT_DIR)" ]; then \
+		case "$(OUTPUT_DIR)" in \
+			/*) OUTPUT_FLAG="--output-dir $(OUTPUT_DIR)";; \
+			*) OUTPUT_FLAG="--output-dir ../$(OUTPUT_DIR)";; \
+		esac; \
+	fi; \
+	cd tools && poetry run python src/oke_version_report.py $(PROJECT) $(STAGE) $$META_FLAG $$OUTPUT_FLAG
 
 # Alternative ssh-sync targets for convenience
 ssh-sync-remote-observer-dev:

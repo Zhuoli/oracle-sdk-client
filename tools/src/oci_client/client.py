@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import oci
 import requests
+from oci.pagination import list_call_get_all_results
 from rich.console import Console
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -18,6 +19,8 @@ from .models import (
     BastionType,
     InstanceInfo,
     LifecycleState,
+    OKEClusterInfo,
+    OKENodePoolInfo,
     OCIConfig,
     RegionInfo,
     SessionInfo,
@@ -368,6 +371,79 @@ class OCIClient:
         except Exception as e:
             logger.error(f"Failed to list instances: {e}")
             raise RuntimeError(f"Failed to list instances: {e}")
+
+    def list_oke_clusters(
+        self,
+        compartment_id: str,
+        lifecycle_state: Optional[LifecycleState] = None,
+    ) -> List[OKEClusterInfo]:
+        """List OKE clusters in a compartment."""
+        try:
+            ce_client = self.container_engine_client
+            request_kwargs: Dict[str, Any] = {"compartment_id": compartment_id}
+            if lifecycle_state:
+                request_kwargs["lifecycle_state"] = lifecycle_state.value
+
+            response = list_call_get_all_results(ce_client.list_clusters, **request_kwargs)
+            clusters: List[OKEClusterInfo] = []
+
+            for cluster in getattr(response, "data", []) or []:
+                cluster_id = getattr(cluster, "id", None)
+                if not cluster_id:
+                    logger.debug("Skipping OKE cluster without an ID in compartment %s", compartment_id)
+                    continue
+
+                available_upgrades = list(getattr(cluster, "available_upgrades", []) or [])
+                cluster_info = OKEClusterInfo(
+                    cluster_id=cluster_id,
+                    name=getattr(cluster, "name", cluster_id),
+                    kubernetes_version=getattr(cluster, "kubernetes_version", None),
+                    lifecycle_state=getattr(cluster, "lifecycle_state", None),
+                    compartment_id=getattr(cluster, "compartment_id", compartment_id),
+                    available_upgrades=available_upgrades,
+                )
+                clusters.append(cluster_info)
+
+            return clusters
+
+        except Exception as e:
+            logger.error(f"Failed to list OKE clusters in compartment {compartment_id}: {e}")
+            raise RuntimeError(f"Failed to list OKE clusters in compartment {compartment_id}: {e}") from e
+
+    def list_node_pools(
+        self,
+        cluster_id: str,
+        compartment_id: Optional[str] = None,
+    ) -> List[OKENodePoolInfo]:
+        """List node pools for an OKE cluster."""
+        try:
+            ce_client = self.container_engine_client
+            request_kwargs: Dict[str, Any] = {"cluster_id": cluster_id}
+            if compartment_id:
+                request_kwargs["compartment_id"] = compartment_id
+
+            response = list_call_get_all_results(ce_client.list_node_pools, **request_kwargs)
+            node_pools: List[OKENodePoolInfo] = []
+
+            for node_pool in getattr(response, "data", []) or []:
+                node_pool_id = getattr(node_pool, "id", None)
+                if not node_pool_id:
+                    logger.debug("Skipping node pool without an ID for cluster %s", cluster_id)
+                    continue
+
+                node_pool_info = OKENodePoolInfo(
+                    node_pool_id=node_pool_id,
+                    name=getattr(node_pool, "name", node_pool_id),
+                    kubernetes_version=getattr(node_pool, "kubernetes_version", None),
+                    lifecycle_state=getattr(node_pool, "lifecycle_state", None),
+                )
+                node_pools.append(node_pool_info)
+
+            return node_pools
+
+        except Exception as e:
+            logger.error(f"Failed to list node pools for cluster {cluster_id}: {e}")
+            raise RuntimeError(f"Failed to list node pools for cluster {cluster_id}: {e}") from e
 
     def list_oke_instances(
         self, compartment_id: str, cluster_name: Optional[str] = None

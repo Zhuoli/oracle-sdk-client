@@ -77,6 +77,29 @@ class SessionInfo:
     lifecycle_state: LifecycleState = LifecycleState.ACTIVE
 
 
+@dataclass
+class OKENodePoolInfo:
+    """Summary information about an OKE node pool."""
+
+    node_pool_id: str
+    name: str
+    kubernetes_version: Optional[str] = None
+    lifecycle_state: Optional[str] = None
+
+
+@dataclass
+class OKEClusterInfo:
+    """Summary information about an OKE cluster and its node pools."""
+
+    cluster_id: str
+    name: str
+    kubernetes_version: Optional[str] = None
+    lifecycle_state: Optional[str] = None
+    compartment_id: Optional[str] = None
+    available_upgrades: List[str] = field(default_factory=list)
+    node_pools: List[OKENodePoolInfo] = field(default_factory=list)
+
+
 class OCIConfig(BaseModel):
     """OCI configuration model with validation."""
 
