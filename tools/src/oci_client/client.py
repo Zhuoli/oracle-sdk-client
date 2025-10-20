@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import oci
 import requests
+from oci.container_engine.models import UpdateClusterDetails
 from oci.pagination import list_call_get_all_results
 from rich.console import Console
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -468,6 +469,43 @@ class OCIClient:
         except Exception as e:
             logger.error(f"Failed to list node pools for cluster {cluster_id}: {e}")
             raise RuntimeError(f"Failed to list node pools for cluster {cluster_id}: {e}") from e
+
+    def upgrade_oke_cluster(self, cluster_id: str, target_version: str) -> str:
+        """
+        Initiate an upgrade of the specified OKE cluster to the target Kubernetes version.
+
+        Returns:
+            str: Work request ID for tracking the upgrade.
+        """
+        ce_client = self.container_engine_client
+        logger.info(
+            "Initiating OKE cluster upgrade: cluster_id=%s target_version=%s region=%s",
+            cluster_id,
+            target_version,
+            self.config.region,
+        )
+        try:
+            update_details = UpdateClusterDetails(kubernetes_version=target_version)
+            response = ce_client.update_cluster(cluster_id, update_details)
+            work_request_id = response.headers.get("opc-work-request-id", "")
+            if not work_request_id:
+                logger.debug(
+                    "No work request ID returned from update_cluster call for cluster_id=%s target_version=%s",
+                    cluster_id,
+                    target_version,
+                )
+            return work_request_id
+        except Exception as exc:
+            logger.error(
+                "Failed to initiate OKE cluster upgrade: cluster_id=%s target_version=%s region=%s error=%s",
+                cluster_id,
+                target_version,
+                self.config.region,
+                exc,
+            )
+            raise RuntimeError(
+                f"Failed to initiate upgrade for cluster {cluster_id} to {target_version}: {exc}"
+            ) from exc
 
     def list_oke_instances(
         self, compartment_id: str, cluster_name: Optional[str] = None
