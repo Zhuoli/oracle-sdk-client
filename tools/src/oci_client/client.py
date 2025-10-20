@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import oci
 import requests
-from oci.container_engine.models import UpdateClusterDetails
+from oci.container_engine.models import UpdateClusterDetails, UpdateNodePoolDetails
 from oci.pagination import list_call_get_all_results
 from rich.console import Console
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -470,6 +470,36 @@ class OCIClient:
             logger.error(f"Failed to list node pools for cluster {cluster_id}: {e}")
             raise RuntimeError(f"Failed to list node pools for cluster {cluster_id}: {e}") from e
 
+    def get_oke_cluster(self, cluster_id: str) -> OKEClusterInfo:
+        """Retrieve detailed information for an OKE cluster."""
+        ce_client = self.container_engine_client
+        try:
+            cluster = ce_client.get_cluster(cluster_id).data
+        except Exception as exc:
+            logger.error(
+                "Failed to fetch OKE cluster details: cluster_id=%s region=%s error=%s",
+                cluster_id,
+                self.config.region,
+                exc,
+            )
+            raise RuntimeError(f"Failed to fetch cluster {cluster_id}: {exc}") from exc
+
+        available_upgrades_attr = getattr(cluster, "available_kubernetes_upgrades", None)
+        if available_upgrades_attr is None:
+            available_upgrades_attr = getattr(cluster, "available_upgrades", None)
+        available_upgrades = list(available_upgrades_attr or [])
+
+        cluster_info = OKEClusterInfo(
+            cluster_id=cluster_id,
+            name=getattr(cluster, "name", cluster_id),
+            kubernetes_version=getattr(cluster, "kubernetes_version", None),
+            lifecycle_state=getattr(cluster, "lifecycle_state", None),
+            compartment_id=getattr(cluster, "compartment_id", None),
+            available_upgrades=available_upgrades,
+        )
+
+        return cluster_info
+
     def upgrade_oke_cluster(self, cluster_id: str, target_version: str) -> str:
         """
         Initiate an upgrade of the specified OKE cluster to the target Kubernetes version.
@@ -505,6 +535,43 @@ class OCIClient:
             )
             raise RuntimeError(
                 f"Failed to initiate upgrade for cluster {cluster_id} to {target_version}: {exc}"
+            ) from exc
+
+    def upgrade_oke_node_pool(self, node_pool_id: str, target_version: str) -> str:
+        """
+        Initiate an upgrade of the specified OKE node pool to the target Kubernetes version.
+
+        Returns:
+            str: Work request ID for tracking the upgrade.
+        """
+        ce_client = self.container_engine_client
+        logger.info(
+            "Initiating OKE node pool upgrade: node_pool_id=%s target_version=%s region=%s",
+            node_pool_id,
+            target_version,
+            self.config.region,
+        )
+        try:
+            update_details = UpdateNodePoolDetails(kubernetes_version=target_version)
+            response = ce_client.update_node_pool(node_pool_id, update_details)
+            work_request_id = response.headers.get("opc-work-request-id", "")
+            if not work_request_id:
+                logger.debug(
+                    "No work request ID returned from update_node_pool call for node_pool_id=%s target_version=%s",
+                    node_pool_id,
+                    target_version,
+                )
+            return work_request_id
+        except Exception as exc:
+            logger.error(
+                "Failed to initiate OKE node pool upgrade: node_pool_id=%s target_version=%s region=%s error=%s",
+                node_pool_id,
+                target_version,
+                self.config.region,
+                exc,
+            )
+            raise RuntimeError(
+                f"Failed to initiate upgrade for node pool {node_pool_id} to {target_version}: {exc}"
             ) from exc
 
     def list_oke_instances(

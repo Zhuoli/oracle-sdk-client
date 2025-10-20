@@ -7,7 +7,7 @@ DESC_COLOR=\033[0;37m
 TITLE_COLOR=\033[1;33m
 RESET=\033[0m
 
-.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates recycle-node-pools delete-bucket delete-oke-cluster oke-version-report oke-upgrade
+.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates recycle-node-pools delete-bucket delete-oke-cluster oke-version-report oke-upgrade oke-upgrade-node-pools
 
 # Default target
 help:
@@ -19,6 +19,7 @@ help:
 	@printf "  $(CMD_COLOR)ssh-sync$(RESET)      $(DESC_COLOR)Generate SSH config for OCI instances$(RESET)\n"
 	@printf "  $(CMD_COLOR)oke-version-report$(RESET) $(DESC_COLOR)Generate HTML report of OKE cluster and node pool versions$(RESET)\n"
 	@printf "  $(CMD_COLOR)oke-upgrade$(RESET)   $(DESC_COLOR)Trigger OKE cluster upgrades using a report file$(RESET)\n"
+	@printf "  $(CMD_COLOR)oke-upgrade-node-pools$(RESET) $(DESC_COLOR)Cascade node pool upgrades after the control plane$(RESET)\n"
 	@printf "  $(CMD_COLOR)ssh-help$(RESET)      $(DESC_COLOR)Show SSH sync configuration help$(RESET)\n"
 	@printf "  $(CMD_COLOR)image-updates$(RESET) $(DESC_COLOR)Check for newer images for compute instances (by project/stage)$(RESET)\n"
 	@printf "  $(CMD_COLOR)recycle-node-pools$(RESET) $(DESC_COLOR)CSV=<file> [DRY_RUN=1] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)]$(RESET)\n"
@@ -133,6 +134,54 @@ oke-upgrade:
 		VERBOSE_FLAG="--verbose"; \
 	fi; \
 	cd tools && poetry run python src/oke_upgrade.py $$REPORT_ARG $$TARGET_FLAG $$PROJECT_FLAG $$STAGE_FLAG $$REGION_FLAG $$CLUSTER_FLAG $$DRY_RUN_FLAG $$VERBOSE_FLAG
+
+oke-upgrade-node-pools:
+	@echo "🌊 Triggering OKE node pool upgrades..."
+	@if [ -z "$(REPORT)" ]; then \
+		echo "❌ Error: REPORT=<path_to_report.html> is required"; \
+		echo "Usage: make oke-upgrade-node-pools REPORT=reports/oke_versions_project_stage.html [TARGET_VERSION=1.34.1] [PROJECT=<name>] [STAGE=<env>] [REGION=<id>] [CLUSTER=<ocid_or_name>] [NODE_POOL=<id_or_name>] [DRY_RUN=1] [VERBOSE=1]"; \
+		exit 1; \
+	fi
+	@REPORT_ARG=""; \
+	case "$(REPORT)" in \
+		/*) REPORT_ARG="$(REPORT)";; \
+		*) REPORT_ARG="../$(REPORT)";; \
+	esac; \
+	TARGET_FLAG=""; \
+	if [ -n "$(TARGET_VERSION)" ]; then \
+		TARGET_FLAG="--target-version $(TARGET_VERSION)"; \
+	fi; \
+	PROJECT_FLAG=""; \
+	if [ -n "$(PROJECT)" ]; then \
+		PROJECT_FLAG="--project $(PROJECT)"; \
+	fi; \
+	STAGE_FLAG=""; \
+	if [ -n "$(STAGE)" ]; then \
+		STAGE_FLAG="--stage $(STAGE)"; \
+	fi; \
+	REGION_FLAG=""; \
+	if [ -n "$(REGION)" ]; then \
+		REGION_FLAG="--region $(REGION)"; \
+	fi; \
+	CLUSTER_FLAG=""; \
+	if [ -n "$(CLUSTER)" ]; then \
+		CLUSTER_FLAG="--cluster $(CLUSTER)"; \
+	fi; \
+	NODE_POOL_FLAG=""; \
+	if [ -n "$(NODE_POOL)" ]; then \
+		for NP in $(NODE_POOL); do \
+			NODE_POOL_FLAG="$$NODE_POOL_FLAG --node-pool $$NP"; \
+		done; \
+	fi; \
+	DRY_RUN_FLAG=""; \
+	if [ "$(DRY_RUN)" = "1" ] || [ "$(DRY_RUN)" = "true" ] || [ "$(DRY_RUN)" = "TRUE" ] || [ "$(DRY_RUN)" = "yes" ] || [ "$(DRY_RUN)" = "YES" ]; then \
+		DRY_RUN_FLAG="--dry-run"; \
+	fi; \
+	VERBOSE_FLAG=""; \
+	if [ "$(VERBOSE)" = "1" ] || [ "$(VERBOSE)" = "true" ] || [ "$(VERBOSE)" = "TRUE" ] || [ "$(VERBOSE)" = "yes" ] || [ "$(VERBOSE)" = "YES" ]; then \
+		VERBOSE_FLAG="--verbose"; \
+	fi; \
+	cd tools && poetry run python src/oke_node_pool_upgrade.py $$REPORT_ARG $$TARGET_FLAG $$PROJECT_FLAG $$STAGE_FLAG $$REGION_FLAG $$CLUSTER_FLAG $$NODE_POOL_FLAG $$DRY_RUN_FLAG $$VERBOSE_FLAG
 
 # Alternative ssh-sync targets for convenience
 ssh-sync-remote-observer-dev:
