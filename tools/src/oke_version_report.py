@@ -167,12 +167,12 @@ def generate_html_report(
             f"<td>{escape(entry.project)}</td>"
             f"<td>{escape(entry.stage)}</td>"
             f"<td>{escape(entry.region)}</td>"
-            f"<td class='mono'>{escape(entry.compartment_id)}</td>"
             f"<td>{escape(cluster.name)}</td>"
-            f"<td class='mono'>{escape(cluster.cluster_id)}</td>"
             f"<td>{escape(cluster.kubernetes_version or 'Unknown')}</td>"
             f"<td>{escape(upgrades)}</td>"
             f"<td>{node_pools_html}</td>"
+            f"<td class='mono'>{escape(entry.compartment_id)}</td>"
+            f"<td class='mono'>{escape(cluster.cluster_id)}</td>"
             "</tr>"
         )
 
@@ -212,12 +212,12 @@ def generate_html_report(
         <th>Project</th>
         <th>Stage</th>
         <th>Region</th>
-        <th>Compartment OCID</th>
         <th>Cluster Name</th>
-        <th>Cluster OCID</th>
         <th>Cluster Version</th>
         <th>Available Upgrades</th>
         <th>Node Pools</th>
+        <th>Compartment OCID</th>
+        <th>Cluster OCID</th>
       </tr>
     </thead>
     <tbody>
