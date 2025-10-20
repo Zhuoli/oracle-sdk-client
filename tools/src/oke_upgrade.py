@@ -87,7 +87,18 @@ class _ReportHTMLParser(HTMLParser):
 def _parse_available_upgrades(raw_value: str) -> List[str]:
     if not raw_value or raw_value.lower() == "none":
         return []
-    return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+    versions: List[str] = []
+    for candidate in raw_value.split(","):
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        normalized = _extract_version(candidate)
+        if not normalized:
+            continue
+        if normalized not in versions:
+            versions.append(normalized)
+    return versions
 
 
 def _parse_report_rows(rows: Iterable[Sequence[str]]) -> List[ReportCluster]:
@@ -141,6 +152,17 @@ def _version_key(version: str) -> Tuple[int, ...]:
     return tuple(int(value) for value in digits)
 
 
+def _extract_version(value: str) -> Optional[str]:
+    """Normalize version strings such as 'v1.34.1 (control plane)' -> '1.34.1'."""
+    if not value:
+        return None
+    match = re.search(r"\d+(?:\.\d+)*", value)
+    if match:
+        return match.group(0)
+    stripped = value.strip()
+    return stripped or None
+
+
 def choose_target_version(
     available: Sequence[str],
     requested_version: Optional[str] = None,
@@ -154,9 +176,13 @@ def choose_target_version(
     if not available:
         return None
 
-    if requested_version:
-        if requested_version in available:
-            return requested_version
+    normalized_requested = _extract_version(requested_version) if requested_version else None
+
+    if normalized_requested:
+        normalized_available = [_extract_version(version) for version in available]
+        if normalized_requested in normalized_available:
+            index = normalized_available.index(normalized_requested)
+            return available[index]
         return None
 
     return max(available, key=_version_key)
@@ -226,12 +252,16 @@ def perform_cluster_upgrades(
             )
             continue
 
+        normalized_request = _extract_version(requested_version) if requested_version else None
         target_version = choose_target_version(entry.available_upgrades, requested_version)
 
         if not target_version:
+            available_text = ", ".join(entry.available_upgrades) or "None"
+            requested_text = normalized_request or requested_version or "latest"
             message = (
                 f"No upgrade candidates for cluster {entry.cluster_name} "
-                f"({entry.cluster_ocid}) in {entry.region}."
+                f"({entry.cluster_ocid}) in {entry.region}. "
+                f"Available upgrades: {available_text}. Requested: {requested_text}."
             )
             display_warning(message)
             results.append(

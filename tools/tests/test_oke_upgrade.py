@@ -36,7 +36,7 @@ def test_load_clusters_from_report_parses_rows(tmp_path: Path) -> None:
         "<td>us-phoenix-1</td>"
         "<td>cluster-a</td>"
         "<td>1.32.1</td>"
-        "<td>1.33.1, 1.34.1</td>"
+        "<td>v1.33.1, 1.34.1 (control plane)</td>"
         "<td>Node pools</td>"
         "<td>ocid1.compartment.oc1..example</td>"
         "<td>ocid1.cluster.oc1..clusterA</td>"
@@ -66,6 +66,12 @@ def test_choose_target_version_selects_highest() -> None:
     available = ["v1.31.5", "v1.34.1", "v1.32.2"]
 
     assert choose_target_version(available) == "v1.34.1"
+
+
+def test_choose_target_version_handles_prefixed_request() -> None:
+    available = ["1.33.1", "1.34.1"]
+
+    assert choose_target_version(available, requested_version="v1.34.1") == "1.34.1"
 
 
 def test_perform_cluster_upgrades_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
