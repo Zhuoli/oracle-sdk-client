@@ -390,10 +390,34 @@ class OCIClient:
             for cluster in getattr(response, "data", []) or []:
                 cluster_id = getattr(cluster, "id", None)
                 if not cluster_id:
-                    logger.debug("Skipping OKE cluster without an ID in compartment %s", compartment_id)
+                    logger.debug(
+                        "Skipping OKE cluster without an ID in compartment %s", compartment_id
+                    )
                     continue
 
-                available_upgrades = list(getattr(cluster, "available_upgrades", []) or [])
+                available_upgrades_attr = getattr(cluster, "available_kubernetes_upgrades", None)
+                if available_upgrades_attr is None:
+                    available_upgrades_attr = getattr(cluster, "available_upgrades", None)
+                available_upgrades = list(available_upgrades_attr or [])
+
+                if not available_upgrades:
+                    try:
+                        cluster_details = ce_client.get_cluster(cluster_id).data
+                        upgrades_from_details = getattr(
+                            cluster_details, "available_kubernetes_upgrades", None
+                        )
+                        if upgrades_from_details is None:
+                            upgrades_from_details = getattr(
+                                cluster_details, "available_upgrades", None
+                            )
+                        available_upgrades = list(upgrades_from_details or [])
+                    except Exception as details_error:  # pragma: no cover - diagnostic only
+                        logger.debug(
+                            "Could not fetch detailed upgrades for cluster %s: %s",
+                            cluster_id,
+                            details_error,
+                        )
+
                 cluster_info = OKEClusterInfo(
                     cluster_id=cluster_id,
                     name=getattr(cluster, "name", cluster_id),
