@@ -7,7 +7,7 @@ DESC_COLOR=\033[0;37m
 TITLE_COLOR=\033[1;33m
 RESET=\033[0m
 
-.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates oke-node-pool-bump delete-bucket delete-oke-cluster oke-version-report oke-upgrade oke-upgrade-node-pools
+.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates oke-node-pool-bump oke-node-cycle delete-bucket delete-oke-cluster oke-version-report oke-upgrade oke-upgrade-node-pools
 
 # Default target
 help:
@@ -23,6 +23,7 @@ help:
 	@printf "  $(CMD_COLOR)ssh-help$(RESET)      $(DESC_COLOR)Show SSH sync configuration help$(RESET)\n"
 	@printf "  $(CMD_COLOR)image-updates$(RESET) $(DESC_COLOR)Check for newer images for compute instances (by project/stage)$(RESET)\n"
 	@printf "  $(CMD_COLOR)oke-node-pool-bump$(RESET) $(DESC_COLOR)CSV=<file> [DRY_RUN=1] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)]$(RESET)\n"
+	@printf "  $(CMD_COLOR)oke-node-cycle$(RESET) $(DESC_COLOR)REPORT=<file> [PROJECT=<name>] [STAGE=<env>] [REGION=<id>] [CLUSTER=<ocid|name>] [NODE_POOL=<ocid|name>] [NODE=<ocid|name>] [TARGET_VERSION=<v>] [GRACE_PERIOD=PT30M] [FORCE_AFTER_GRACE=1] [POLL_SECONDS=$(POLL_SECONDS)] [NO_WAIT=1] [DRY_RUN=1]$(RESET)\n"
 	@printf "  $(CMD_COLOR)delete-bucket$(RESET) $(DESC_COLOR)PROJECT=<name> STAGE=<env> REGION=<id> BUCKET=<bucket> [NAMESPACE=<override>]$(RESET)\n"
 	@printf "  $(CMD_COLOR)delete-oke-cluster$(RESET) $(DESC_COLOR)PROJECT=<name> STAGE=<env> REGION=<id> CLUSTER_ID=<ocid> [SKIP_NODE_POOLS=1]$(RESET)\n\n"
 	@printf "$(TITLE_COLOR)Development Commands:$(RESET)\n"
@@ -274,6 +275,7 @@ image-updates:
 
 
 # OKE node pool image bump
+# OKE node pool image bump
 oke-node-pool-bump:
 	@if [ -z "$(CSV)" ]; then \
 		echo "❌ Error: CSV=<file> is required"; \
@@ -298,6 +300,69 @@ oke-node-pool-bump:
 		META_FLAG="--meta-file ../$(META)"; \
 	fi; \
 	cd tools && poetry run python src/recycle_node_pools.py --csv-path "../$(CSV)" $$POLL_FLAG $$CONFIG_FLAG $$META_FLAG $$DRY_RUN_FLAG
+
+# OKE node cycling (replace boot volumes)
+oke-node-cycle:
+	@if [ -z "$(REPORT)" ]; then \
+		echo "❌ Error: REPORT=<file> is required"; \
+		echo "Usage: make oke-node-cycle REPORT=reports/oke_versions_project_stage.html [PROJECT=<name>] [STAGE=<env>] [REGION=<id>] [CLUSTER=<ocid|name>] [NODE_POOL=<ocid|name>] [NODE=<ocid|name>] [TARGET_VERSION=<v>] [GRACE_PERIOD=PT30M] [FORCE_AFTER_GRACE=1] [POLL_SECONDS=$(POLL_SECONDS)] [NO_WAIT=1] [DRY_RUN=1]"; \
+		exit 1; \
+	fi
+	@echo "🔁 Cycling OKE node pools from $(REPORT)"
+	@REPORT_ARG=""; \
+	case "$(REPORT)" in \
+		/*) REPORT_ARG="$(REPORT)";; \
+		*) REPORT_ARG="../$(REPORT)";; \
+	esac; \
+	PROJECT_FLAG=""; \
+	if [ -n "$(PROJECT)" ]; then \
+		PROJECT_FLAG="--project $(PROJECT)"; \
+	fi; \
+	STAGE_FLAG=""; \
+	if [ -n "$(STAGE)" ]; then \
+		STAGE_FLAG="--stage $(STAGE)"; \
+	fi; \
+	REGION_FLAG=""; \
+	if [ -n "$(REGION)" ]; then \
+		REGION_FLAG="--region $(REGION)"; \
+	fi; \
+	CLUSTER_FLAG=""; \
+	if [ -n "$(CLUSTER)" ]; then \
+		CLUSTER_FLAG="--cluster $(CLUSTER)"; \
+	fi; \
+	TARGET_FLAG=""; \
+	if [ -n "$(TARGET_VERSION)" ]; then \
+		TARGET_FLAG="--target-version $(TARGET_VERSION)"; \
+	fi; \
+	NODE_POOL_FLAG=""; \
+	if [ -n "$(NODE_POOL)" ]; then \
+		NODE_POOL_FLAG="--node-pool $(NODE_POOL)"; \
+	fi; \
+	NODE_FLAG=""; \
+	if [ -n "$(NODE)" ]; then \
+		NODE_FLAG="--node $(NODE)"; \
+	fi; \
+	GRACE_FLAG=""; \
+	if [ -n "$(GRACE_PERIOD)" ]; then \
+		GRACE_FLAG="--grace-period $(GRACE_PERIOD)"; \
+	fi; \
+	FORCE_FLAG=""; \
+	if [ "$(FORCE_AFTER_GRACE)" = "1" ] || [ "$(FORCE_AFTER_GRACE)" = "true" ] || [ "$(FORCE_AFTER_GRACE)" = "TRUE" ] || [ "$(FORCE_AFTER_GRACE)" = "yes" ] || [ "$(FORCE_AFTER_GRACE)" = "YES" ]; then \
+		FORCE_FLAG="--force-after-grace"; \
+	fi; \
+	POLL_FLAG=""; \
+	if [ -n "$(POLL_SECONDS)" ]; then \
+		POLL_FLAG="--poll-seconds $(POLL_SECONDS)"; \
+	fi; \
+	DRY_RUN_FLAG=""; \
+	if [ "$(DRY_RUN)" = "1" ] || [ "$(DRY_RUN)" = "true" ] || [ "$(DRY_RUN)" = "TRUE" ] || [ "$(DRY_RUN)" = "yes" ] || [ "$(DRY_RUN)" = "YES" ]; then \
+		DRY_RUN_FLAG="--dry-run"; \
+	fi; \
+	NO_WAIT_FLAG=""; \
+	if [ "$(NO_WAIT)" = "1" ] || [ "$(NO_WAIT)" = "true" ] || [ "$(NO_WAIT)" = "TRUE" ] || [ "$(NO_WAIT)" = "yes" ] || [ "$(NO_WAIT)" = "YES" ]; then \
+		NO_WAIT_FLAG="--no-wait"; \
+	fi; \
+	cd tools && poetry run python src/oke_node_cycle.py "$$REPORT_ARG" $$PROJECT_FLAG $$STAGE_FLAG $$REGION_FLAG $$CLUSTER_FLAG $$TARGET_FLAG $$NODE_POOL_FLAG $$NODE_FLAG $$GRACE_FLAG $$FORCE_FLAG $$POLL_FLAG $$NO_WAIT_FLAG $$DRY_RUN_FLAG
 
 delete-bucket:
 	@if [ -z "$(PROJECT)" ] || [ -z "$(STAGE)" ] || [ -z "$(REGION)" ] || [ -z "$(BUCKET)" ]; then \
