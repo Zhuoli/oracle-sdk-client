@@ -76,7 +76,7 @@ def test_perform_node_cycles_triggers_replace_boot_volume(monkeypatch, sample_en
     cycling = details.node_pool_cycling_details
     assert cycling.is_node_cycling_enabled is True
     assert cycling.cycle_modes == ["BOOT_VOLUME_REPLACE"]
-    assert cycling.maximum_unavailable == 2
+    assert cycling.maximum_unavailable == "2"
     assert results[0].work_request_id == "wr1"
     assert results[0].status in {"IN_PROGRESS", "UNKNOWN"}
 
@@ -150,7 +150,7 @@ def test_perform_node_cycles_respects_maximum_unavailable(monkeypatch, sample_en
     assert len(fake_ce.update_calls) == 1
     pool_id, details = fake_ce.update_calls[0]
     assert pool_id == "ocid1.nodepool.oc1..np-max"
-    assert details.node_pool_cycling_details.maximum_unavailable == 2
+    assert details.node_pool_cycling_details.maximum_unavailable == "2"
 def test_diagnose_report_flags_short_rows(tmp_path):
     html = """<!DOCTYPE html>
 <html><body>

@@ -165,8 +165,8 @@ def _cycle_node_pool(
     cycling_details = NodePoolCyclingDetails(
         is_node_cycling_enabled=True,
         cycle_modes=["BOOT_VOLUME_REPLACE"],
-        maximum_unavailable=maximum_unavailable,
-        maximum_surge=maximum_surge,
+        maximum_unavailable=str(maximum_unavailable),
+        maximum_surge=str(maximum_surge) if maximum_surge not in (None, "") else None,
     )
 
     if dry_run:
