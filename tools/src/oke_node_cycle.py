@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -35,8 +34,6 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 SKIP_NODE_STATES = {"DELETED", "DELETING"}
-TERMINAL_WORK_REQUEST_STATES = {"SUCCEEDED", "FAILED", "CANCELED"}
-DEFAULT_POLL_SECONDS = 30
 
 
 @dataclass
@@ -142,77 +139,6 @@ def _extract_maximum_unavailable(node_pool_details: Any) -> int:
     return max(value, 1)
 
 
-def _collect_work_request_errors(ce_client: Any, work_request_id: str) -> List[str]:
-    errors: List[str] = []
-    try:
-        response = ce_client.list_work_request_errors(work_request_id)
-    except oci_exceptions.ServiceError as exc:
-        logger.error("Failed to fetch errors for work request %s: %s", work_request_id, exc.message)
-        return errors
-
-    for item in getattr(response, "data", []) or []:
-        message = getattr(item, "message", None)
-        timestamp = getattr(item, "timestamp", None)
-        formatted = f"{timestamp}: {message}" if timestamp else (message or "Unknown error")
-        if formatted:
-            errors.append(formatted)
-            logger.error("Work request %s error: %s", work_request_id, formatted)
-    return errors
-
-
-def _wait_for_work_request(
-    ce_client: Any,
-    work_request_id: str,
-    poll_seconds: int,
-) -> Tuple[str, List[str]]:
-    """Poll the Container Engine work request until it completes."""
-    while True:
-        try:
-            response = ce_client.get_work_request(work_request_id)
-        except oci_exceptions.ServiceError as exc:
-            logger.error("Error querying work request %s: %s", work_request_id, exc.message)
-            return "FAILED", [exc.message]
-
-        work_request = response.data
-        status = getattr(work_request, "status", "UNKNOWN") or "UNKNOWN"
-        percent = getattr(work_request, "percent_complete", None)
-        operation = getattr(work_request, "operation_type", "UNKNOWN")
-        logger.info(
-            "Work request %s status=%s operation=%s percent=%s",
-            work_request_id,
-            status,
-            operation,
-            percent,
-        )
-
-        if status in TERMINAL_WORK_REQUEST_STATES:
-            if status == "SUCCEEDED":
-                return status, []
-            errors = _collect_work_request_errors(ce_client, work_request_id)
-            return status or "FAILED", errors
-
-        time.sleep(poll_seconds)
-
-
-def _complete_next_work_request(
-    inflight: List[Tuple[str, NodeCycleResult, Any]],
-    poll_seconds: int,
-) -> NodeCycleResult:
-    work_request_id, result, ce_client = inflight.pop(0)
-    status, errors = _wait_for_work_request(ce_client, work_request_id, poll_seconds)
-    result.status = status or "UNKNOWN"
-    if errors:
-        result.error = "; ".join(errors)
-        console.print(
-            f"[bold red]✗[/bold red] Cycle for node [cyan]{result.node_name}[/cyan] "
-            f"({result.node_id}) ended with status [red]{result.status}[/red]."
-        )
-    else:
-        console.print(
-            f"[bold green]✓[/bold green] Cycle completed for node [cyan]{result.node_name}[/cyan] "
-            f"({result.node_id}). Work request: [magenta]{work_request_id}[/magenta]"
-        )
-    return result
 
 
 def _cycle_node(
@@ -461,8 +387,12 @@ def perform_node_cycles(
 
             nodes = getattr(node_pool_details, "nodes", None) or []
             maximum_unavailable = _extract_maximum_unavailable(node_pool_details)
-            inflight: List[Tuple[str, NodeCycleResult, Any]] = []
-
+            logger.info(
+                "Node pool %s (%s) maximum_unavailable=%s",
+                node_pool.name,
+                node_pool.node_pool_id,
+                maximum_unavailable,
+            )
             if not nodes:
                 console.print(
                     f"[dim]Node pool [cyan]{node_pool.name}[/cyan] "
@@ -471,10 +401,6 @@ def perform_node_cycles(
                 continue
 
             for node in nodes:
-                if not dry_run:
-                    while inflight and len(inflight) >= maximum_unavailable:
-                        _complete_next_work_request(inflight, DEFAULT_POLL_SECONDS)
-
                 result = _cycle_node(
                     entry,
                     node_pool,
@@ -485,13 +411,6 @@ def perform_node_cycles(
                     dry_run=dry_run,
                 )
                 results.append(result)
-
-                if not dry_run and result.work_request_id:
-                    inflight.append((result.work_request_id, result, client.container_engine_client))
-
-            if not dry_run:
-                while inflight:
-                    _complete_next_work_request(inflight, DEFAULT_POLL_SECONDS)
 
     return results
 
