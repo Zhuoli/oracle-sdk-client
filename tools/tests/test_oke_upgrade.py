@@ -258,3 +258,90 @@ def test_perform_cluster_upgrades_falls_back_to_latest(monkeypatch: pytest.Monke
     assert len(results) == 1
     assert results[0].success is True
     assert results[0].target_version == "v1.34.1"
+
+
+def test_perform_cluster_upgrades_processes_multiple_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    entries = [
+        ReportCluster(
+            project="today-all",
+            stage="dev",
+            region="us-phoenix-1",
+            cluster_name="cluster-phx",
+            cluster_version="1.31.1",
+            available_upgrades=["1.34.0", "1.34.1"],
+            compartment_ocid="ocid1.compartment.oc1..phx",
+            cluster_ocid="ocid1.cluster.oc1..phx",
+        ),
+        ReportCluster(
+            project="today-all",
+            stage="dev",
+            region="us-ashburn-1",
+            cluster_name="cluster-iad",
+            cluster_version="1.31.1",
+            available_upgrades=["1.33.0", "1.33.1"],
+            compartment_ocid="ocid1.compartment.oc1..iad",
+            cluster_ocid="ocid1.cluster.oc1..iad",
+        ),
+        ReportCluster(
+            project="today-all",
+            stage="dev",
+            region="eu-frankfurt-1",
+            cluster_name="cluster-fra",
+            cluster_version="1.31.1",
+            available_upgrades=["1.33.0", "1.33.1"],
+            compartment_ocid="ocid1.compartment.oc1..fra",
+            cluster_ocid="ocid1.cluster.oc1..fra",
+        ),
+    ]
+
+    class FakeClient:
+        def __init__(self, available: List[str]) -> None:
+            self.available = available
+            self.calls: List[Tuple[str, str]] = []
+
+        def get_oke_cluster(self, cluster_id: str) -> OKEClusterInfo:
+            return OKEClusterInfo(
+                cluster_id=cluster_id,
+                name="cluster",
+                kubernetes_version="1.31.1",
+                compartment_id="ocid1.compartment",
+                lifecycle_state="ACTIVE",
+                available_upgrades=self.available,
+            )
+
+        def upgrade_oke_cluster(self, cluster_id: str, target_version: str) -> str:
+            self.calls.append((cluster_id, target_version))
+            return f"wr-{cluster_id.split('.')[-1]}"
+
+    fake_clients = {
+        ("today-all", "dev", "us-phoenix-1"): FakeClient(["v1.34.0", "v1.34.1"]),
+        ("today-all", "dev", "us-ashburn-1"): FakeClient(["v1.33.0", "v1.33.1"]),
+        ("today-all", "dev", "eu-frankfurt-1"): FakeClient(["v1.33.0", "v1.33.1"]),
+    }
+
+    def fake_setup_session_token(project: str, stage: str, region: str) -> str:
+        key = (project, stage, region)
+        assert key in fake_clients
+        return f"profile-{region}"
+
+    def fake_create_oci_client(region: str, profile: str) -> FakeClient:
+        for key, client in fake_clients.items():
+            if key[2] == region:
+                return client
+        raise AssertionError(f"Unexpected region {region}")
+
+    monkeypatch.setattr("oke_upgrade.setup_session_token", fake_setup_session_token)  # type: ignore
+    monkeypatch.setattr("oke_upgrade.create_oci_client", fake_create_oci_client)  # type: ignore
+
+    results = perform_cluster_upgrades(
+        entries,
+        requested_version="1.33.1",
+        dry_run=False,
+        filters={},
+    )
+
+    assert len(results) == 3
+    assert all(result.success for result in results)
+    assert fake_clients[("today-all", "dev", "us-phoenix-1")].calls == [("ocid1.cluster.oc1..phx", "v1.34.1")]
+    assert fake_clients[("today-all", "dev", "us-ashburn-1")].calls == [("ocid1.cluster.oc1..iad", "v1.33.1")]
+    assert fake_clients[("today-all", "dev", "eu-frankfurt-1")].calls == [("ocid1.cluster.oc1..fra", "v1.33.1")]
