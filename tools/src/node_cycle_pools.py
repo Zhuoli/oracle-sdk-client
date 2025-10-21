@@ -233,8 +233,15 @@ class NodePoolRecycler:
         """Main entry point for the recycler workflow."""
         instructions = self._load_instructions()
         if not instructions:
-            self.logger.error("No actionable rows found in %s", self.csv_path)
-            return 1
+            if self._errors:
+                self.logger.error("No actionable rows found in %s", self.csv_path)
+                return 1
+            self.logger.info(
+                "No actionable rows found in %s; nothing to recycle.",
+                self.csv_path,
+            )
+            self._generate_report()
+            return 0
 
         node_pool_plans, instance_pool_plans = self._build_plans(instructions)
         if not node_pool_plans and not instance_pool_plans:
