@@ -101,6 +101,7 @@ def test_perform_cluster_upgrades_dry_run(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert len(results) == 1
     assert results[0].success is True
+    assert results[0].skipped is False
     assert results[0].target_version == "1.34.1"
     assert results[0].work_request_id is None
 
@@ -158,6 +159,7 @@ def test_perform_cluster_upgrades_triggers_upgrade(monkeypatch: pytest.MonkeyPat
     assert fake_client.calls == [("ocid1.cluster.oc1..clusterA", "v1.34.1")]
     assert len(results) == 1
     assert results[0].success is True
+    assert results[0].skipped is False
     assert results[0].work_request_id == "work-request-123"
 
 
@@ -257,7 +259,57 @@ def test_perform_cluster_upgrades_falls_back_to_latest(monkeypatch: pytest.Monke
     assert fake_client.calls == [("ocid1.cluster.oc1..clusterA", "v1.34.1")]
     assert len(results) == 1
     assert results[0].success is True
+    assert results[0].skipped is False
     assert results[0].target_version == "v1.34.1"
+
+
+def test_perform_cluster_upgrades_marks_skip_when_no_upgrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = ReportCluster(
+        project="today-all",
+        stage="dev",
+        region="us-phoenix-1",
+        cluster_name="cluster-phx",
+        cluster_version="1.34.1",
+        available_upgrades=[],
+        compartment_ocid="ocid1.compartment.oc1..phx",
+        cluster_ocid="ocid1.cluster.oc1..phx",
+    )
+
+    # The entry claims no upgrades, and OCI agrees.
+    class FakeClient:
+        def get_oke_cluster(self, cluster_id: str) -> OKEClusterInfo:
+            return OKEClusterInfo(
+                cluster_id=cluster_id,
+                name="cluster",
+                kubernetes_version="1.34.1",
+                lifecycle_state="ACTIVE",
+                compartment_id="ocid1.compartment",
+                available_upgrades=[],
+            )
+
+        def upgrade_oke_cluster(self, cluster_id: str, target_version: str) -> str:
+            raise AssertionError("should not attempt upgrade when no versions available")
+
+    monkeypatch.setattr(
+        "oke_upgrade.setup_session_token",
+        lambda *args, **kwargs: "profile",
+    )  # type: ignore
+    monkeypatch.setattr(
+        "oke_upgrade.create_oci_client",
+        lambda region, profile: FakeClient(),
+    )  # type: ignore
+
+    results = perform_cluster_upgrades(
+        [entry],
+        requested_version=None,
+        dry_run=False,
+        filters={},
+    )
+
+    assert len(results) == 1
+    assert results[0].success is True
+    assert results[0].skipped is True
+    assert results[0].target_version is None
 
 
 def test_perform_cluster_upgrades_processes_multiple_entries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -342,6 +394,7 @@ def test_perform_cluster_upgrades_processes_multiple_entries(monkeypatch: pytest
 
     assert len(results) == 3
     assert all(result.success for result in results)
+    assert [r.skipped for r in results] == [False, False, False]
     assert fake_clients[("today-all", "dev", "us-phoenix-1")].calls == [("ocid1.cluster.oc1..phx", "v1.34.1")]
     assert fake_clients[("today-all", "dev", "us-ashburn-1")].calls == [("ocid1.cluster.oc1..iad", "v1.33.1")]
     assert fake_clients[("today-all", "dev", "eu-frankfurt-1")].calls == [("ocid1.cluster.oc1..fra", "v1.33.1")]

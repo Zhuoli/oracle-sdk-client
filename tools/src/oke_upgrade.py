@@ -238,11 +238,14 @@ def perform_cluster_upgrades(
     dry_run: bool,
     filters: Optional[Dict[str, List[str]]] = None,
 ) -> List[UpgradeResult]:
+    entries = list(entries)
     filters = filters or {}
     results: List[UpgradeResult] = []
     clients: Dict[Tuple[str, str, str], Any] = {}
 
-    for entry in entries:
+    total = len(entries)
+
+    for index, entry in enumerate(entries, start=1):
         if filters and not _entry_matches_filters(entry, filters):
             logger.debug(
                 "Skipping cluster %s due to filters project=%s stage=%s region=%s cluster_filter=%s",
@@ -256,7 +259,8 @@ def perform_cluster_upgrades(
 
         console.print(
             f"[cyan]Processing cluster[/cyan] [bold]{entry.cluster_name}[/bold] "
-            f"({entry.cluster_ocid}) in region [cyan]{entry.region}[/cyan]..."
+            f"({entry.cluster_ocid}) in region [cyan]{entry.region}[/cyan] "
+            f"[{index}/{total}]..."
         )
 
         normalized_request = _extract_version(requested_version) if requested_version else None
@@ -268,6 +272,16 @@ def perform_cluster_upgrades(
                 entry.cluster_name,
                 entry.cluster_ocid,
                 entry.region,
+            )
+            results.append(
+                UpgradeResult(
+                    entry=entry,
+                    target_version=None,
+                    work_request_id=None,
+                    success=True,
+                    skipped=True,
+                    error="No upgrades reported in HTML report.",
+                )
             )
             continue
 

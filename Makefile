@@ -18,7 +18,7 @@ help:
 	@printf "$(TITLE_COLOR)SSH Sync Commands:$(RESET)\n"
 	@printf "  $(CMD_COLOR)ssh-sync$(RESET)      $(DESC_COLOR)Generate SSH config for OCI instances$(RESET)\n"
 	@printf "  $(CMD_COLOR)oke-version-report$(RESET) $(DESC_COLOR)Generate HTML report of OKE cluster and node pool versions$(RESET)\n"
-	@printf "  $(CMD_COLOR)oke-upgrade$(RESET)   $(DESC_COLOR)Trigger OKE cluster upgrades using a report file$(RESET)\n"
+	@printf "  $(CMD_COLOR)oke-upgrade$(RESET)   $(DESC_COLOR)Trigger OKE cluster upgrades using a report file (use REGION_FILTER=<id> to narrow scope)$(RESET)\n"
 	@printf "  $(CMD_COLOR)oke-upgrade-node-pools$(RESET) $(DESC_COLOR)Cascade node pool upgrades after the control plane$(RESET)\n"
 	@printf "  $(CMD_COLOR)ssh-help$(RESET)      $(DESC_COLOR)Show SSH sync configuration help$(RESET)\n"
 	@printf "  $(CMD_COLOR)image-updates$(RESET) $(DESC_COLOR)Check for newer images for compute instances (by project/stage)$(RESET)\n"
@@ -97,7 +97,7 @@ oke-upgrade:
 	@echo "🚀 Triggering OKE cluster upgrades..."
 	@if [ -z "$(REPORT)" ]; then \
 		echo "❌ Error: REPORT=<path_to_report.html> is required"; \
-		echo "Usage: make oke-upgrade REPORT=reports/oke_versions_project_stage.html [TARGET_VERSION=1.34.1] [PROJECT=<name>] [STAGE=<env>] [REGION=<id>] [CLUSTER=<ocid_or_name>] [DRY_RUN=1] [VERBOSE=1]"; \
+		echo "Usage: make oke-upgrade REPORT=reports/oke_versions_project_stage.html [TARGET_VERSION=1.34.1] [PROJECT=<name>] [STAGE=<env>] [REGION_FILTER=<id>] [CLUSTER=<ocid_or_name>] [DRY_RUN=1] [VERBOSE=1]"; \
 		exit 1; \
 	fi
 	@REPORT_ARG=""; \
@@ -118,7 +118,9 @@ oke-upgrade:
 		STAGE_FLAG="--stage $(STAGE)"; \
 	fi; \
 	REGION_FLAG=""; \
-	if [ -n "$(REGION)" ]; then \
+	if [ -n "$(REGION_FILTER)" ]; then \
+		REGION_FLAG="--region $(REGION_FILTER)"; \
+	elif [ -z "$(REGION_FILTER)" ] && [ -z "$(REPORT)" ] && [ -n "$(REGION)" ]; then \
 		REGION_FLAG="--region $(REGION)"; \
 	fi; \
 	CLUSTER_FLAG=""; \
