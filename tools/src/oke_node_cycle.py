@@ -23,6 +23,7 @@ from oci import exceptions as oci_exceptions
 from oci.container_engine.models import (
     NodeEvictionSettings,
     ReplaceBootVolumeClusterNodeDetails,
+    UpdateNodePoolDetails,
 )
 
 from oci_client.models import OKEClusterInfo, OKENodePoolInfo
@@ -137,6 +138,55 @@ def _extract_maximum_unavailable(node_pool_details: Any) -> int:
         logger.debug("Unable to parse maximum_unavailable=%r; defaulting to 3", candidate)
         return 3
     return max(value, 1)
+
+
+def _normalize_version(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    stripped = value.strip()
+    if stripped.startswith("v"):
+        stripped = stripped[1:]
+    return stripped or None
+
+
+def _ensure_node_pool_version(
+    client: Any,
+    node_pool_id: str,
+    current_version: Optional[str],
+    desired_version: Optional[str],
+) -> Optional[str]:
+    normalized_current = _normalize_version(current_version)
+    normalized_desired = _normalize_version(desired_version)
+    if not normalized_desired:
+        return current_version
+    if normalized_current == normalized_desired:
+        return current_version
+
+    ce_client = getattr(client, "container_engine_client", None)
+    if ce_client is None:
+        logger.warning("Cannot align node pool version because container_engine_client is missing")
+        return current_version
+
+    logger.info(
+        "Aligning node pool %s to Kubernetes version %s (was %s)",
+        node_pool_id,
+        normalized_desired,
+        normalized_current,
+    )
+    try:
+        ce_client.update_node_pool(
+            node_pool_id,
+            UpdateNodePoolDetails(kubernetes_version=desired_version),
+        )
+    except oci_exceptions.ServiceError as exc:
+        logger.error(
+            "Failed to align node pool %s to version %s: %s",
+            node_pool_id,
+            desired_version,
+            exc.message,
+        )
+        return current_version
+    return desired_version
 
 
 
@@ -385,13 +435,22 @@ def perform_node_cycles(
                 )
                 continue
 
+            pool_version = getattr(node_pool_details, "kubernetes_version", None)
+            desired_version = _ensure_node_pool_version(
+                client,
+                node_pool.node_pool_id,
+                pool_version,
+                cluster_info.kubernetes_version,
+            )
+
             nodes = getattr(node_pool_details, "nodes", None) or []
             maximum_unavailable = _extract_maximum_unavailable(node_pool_details)
             logger.info(
-                "Node pool %s (%s) maximum_unavailable=%s",
+                "Node pool %s (%s) maximum_unavailable=%s target_version=%s",
                 node_pool.name,
                 node_pool.node_pool_id,
                 maximum_unavailable,
+                desired_version,
             )
             if not nodes:
                 console.print(
@@ -401,6 +460,16 @@ def perform_node_cycles(
                 continue
 
             for node in nodes:
+                node_version = getattr(node, "kubernetes_version", None)
+                if desired_version and _normalize_version(node_version) == _normalize_version(desired_version):
+                    logger.debug(
+                        "Skipping node %s (%s) because it already reports Kubernetes version %s",
+                        getattr(node, "name", node_version),
+                        getattr(node, "id", "unknown"),
+                        node_version,
+                    )
+                    continue
+
                 result = _cycle_node(
                     entry,
                     node_pool,

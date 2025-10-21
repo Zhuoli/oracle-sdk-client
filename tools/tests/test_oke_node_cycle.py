@@ -37,8 +37,10 @@ def _build_fake_client(nodes, maximum_unavailable="2"):
         data=SimpleNamespace(
             nodes=nodes,
             node_pool_cycling_details=SimpleNamespace(maximum_unavailable=maximum_unavailable),
+            kubernetes_version="1.34.1",
         )
     )
+    fake_ce.update_node_pool = lambda node_pool_id, details: SimpleNamespace(headers={})
     return fake_ce
 
 
