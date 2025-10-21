@@ -60,12 +60,8 @@ def test_perform_node_cycles_triggers_replace_boot_volume(monkeypatch, sample_en
 
     results = perform_node_cycles(
         [sample_entry],
-        requested_version=None,
-        filters={},
         grace_period="PT15M",
         force_after_grace=False,
-        poll_seconds=1,
-        wait_for_completion=False,
         dry_run=False,
     )
 
@@ -99,12 +95,8 @@ def test_perform_node_cycles_dry_run(monkeypatch, sample_entry):
 
     results = perform_node_cycles(
         [sample_entry],
-        requested_version=None,
-        filters={},
         grace_period="PT15M",
         force_after_grace=False,
-        poll_seconds=1,
-        wait_for_completion=False,
         dry_run=True,
     )
 

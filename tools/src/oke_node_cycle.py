@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -34,7 +33,6 @@ from oke_upgrade import ReportCluster, load_clusters_from_report, _ReportHTMLPar
 console = Console()
 logger = logging.getLogger(__name__)
 
-TERMINAL_WORK_REQUEST_STATES = {"SUCCEEDED", "FAILED", "CANCELED"}
 SKIP_NODE_STATES = {"DELETED", "DELETING"}
 
 
@@ -59,56 +57,6 @@ class NodeCycleResult:
             and self.error is None
             and self.status.upper() in {"SUCCEEDED", "IN_PROGRESS"}
         )
-
-
-def _build_filters(args: argparse.Namespace) -> Dict[str, List[str]]:
-    filters: Dict[str, List[str]] = {}
-    if args.project:
-        filters["project"] = [args.project]
-    if args.stage:
-        filters["stage"] = [args.stage]
-    if args.region:
-        filters["region"] = [args.region]
-    if args.cluster:
-        filters["cluster"] = [args.cluster]
-    if args.node_pool:
-        filters["node_pool"] = args.node_pool
-    if args.node:
-        filters["node"] = args.node
-    return filters
-
-
-def _entry_matches_filters(entry: ReportCluster, filters: Dict[str, List[str]]) -> bool:
-    project_filter = filters.get("project")
-    stage_filter = filters.get("stage")
-    region_filter = filters.get("region")
-    cluster_filter = filters.get("cluster")
-
-    if project_filter and entry.project not in project_filter:
-        return False
-    if stage_filter and entry.stage not in stage_filter:
-        return False
-    if region_filter and entry.region not in region_filter:
-        return False
-    if cluster_filter and entry.cluster_ocid not in cluster_filter and entry.cluster_name not in cluster_filter:
-        return False
-    return True
-
-
-def _node_pool_matches_filters(node_pool: OKENodePoolInfo, filters: Dict[str, List[str]]) -> bool:
-    node_pool_filter = filters.get("node_pool")
-    if not node_pool_filter:
-        return True
-    return node_pool.node_pool_id in node_pool_filter or node_pool.name in node_pool_filter
-
-
-def _node_matches_filters(node: Any, filters: Dict[str, List[str]]) -> bool:
-    node_filter = filters.get("node")
-    if not node_filter:
-        return True
-    node_id = getattr(node, "id", "")
-    node_name = getattr(node, "name", "")
-    return any(candidate in {node_id, node_name} for candidate in node_filter)
 
 
 def _resolve_cluster_details(client: Any, cluster_id: str) -> OKEClusterInfo:
@@ -178,58 +126,6 @@ def _fetch_node_pool_details(client: Any, node_pool_id: str) -> Any:
     return ce_client.get_node_pool(node_pool_id).data
 
 
-def _collect_work_request_errors(ce_client: Any, work_request_id: str) -> List[str]:
-    errors: List[str] = []
-    try:
-        response = ce_client.list_work_request_errors(work_request_id)
-    except oci_exceptions.ServiceError as exc:
-        logger.error("Failed to fetch errors for work request %s: %s", work_request_id, exc.message)
-        return errors
-
-    for item in getattr(response, "data", []) or []:
-        message = getattr(item, "message", None)
-        timestamp = getattr(item, "timestamp", None)
-        formatted = f"{timestamp}: {message}" if timestamp else (message or "Unknown error")
-        if formatted:
-            errors.append(formatted)
-            logger.error("Work request %s error: %s", work_request_id, formatted)
-    return errors
-
-
-def _wait_for_work_request(
-    ce_client: Any,
-    work_request_id: str,
-    poll_seconds: int,
-) -> Tuple[str, List[str]]:
-    """Poll the Container Engine work request until it completes."""
-    while True:
-        try:
-            response = ce_client.get_work_request(work_request_id)
-        except oci_exceptions.ServiceError as exc:
-            logger.error("Error querying work request %s: %s", work_request_id, exc.message)
-            return "FAILED", [exc.message]
-
-        work_request = response.data
-        status = getattr(work_request, "status", "UNKNOWN") or "UNKNOWN"
-        percent = getattr(work_request, "percent_complete", None)
-        operation = getattr(work_request, "operation_type", "UNKNOWN")
-        logger.info(
-            "Work request %s status=%s operation=%s percent=%s",
-            work_request_id,
-            status,
-            operation,
-            percent,
-        )
-
-        if status in TERMINAL_WORK_REQUEST_STATES:
-            if status == "SUCCEEDED":
-                return status, []
-            errors = _collect_work_request_errors(ce_client, work_request_id)
-            return status or "FAILED", errors
-
-        time.sleep(poll_seconds)
-
-
 def _cycle_node(
     entry: ReportCluster,
     node_pool: OKENodePoolInfo,
@@ -238,8 +134,6 @@ def _cycle_node(
     *,
     grace_period: str,
     force_after_grace: bool,
-    poll_seconds: int,
-    wait_for_completion: bool,
     dry_run: bool,
 ) -> NodeCycleResult:
     node_id = getattr(node, "id", None)
@@ -357,65 +251,13 @@ def _cycle_node(
         )
 
     work_request_id = response.headers.get("opc-work-request-id")
-    if not wait_for_completion:
-        status = "IN_PROGRESS" if work_request_id else "UNKNOWN"
-        console.print(
-            f"[bold green]✓[/bold green] Cycle triggered for node [cyan]{node_name}[/cyan] "
-            f"({node_id}). Work request: [magenta]{work_request_id or 'N/A'}[/magenta]"
-        )
-        return NodeCycleResult(
-            entry=entry,
-            node_pool_id=node_pool.node_pool_id,
-            node_pool_name=node_pool.name,
-            node_id=node_id,
-            node_name=node_name,
-            status=status,
-            work_request_id=work_request_id,
-        )
-
-    if not work_request_id:
-        message = "OCI did not return a work request ID."
-        logger.error(message)
-        return NodeCycleResult(
-            entry=entry,
-            node_pool_id=node_pool.node_pool_id,
-            node_pool_name=node_pool.name,
-            node_id=node_id,
-            node_name=node_name,
-            status="FAILED",
-            work_request_id=None,
-            error=message,
-        )
-
-    status, errors = _wait_for_work_request(ce_client, work_request_id, poll_seconds)
-    if errors:
-        error_message = "; ".join(errors)
-        console.print(
-            f"[bold red]✗[/bold red] Cycle for node [cyan]{node_name}[/cyan] ({node_id}) "
-            f"ended with status [red]{status}[/red]."
-        )
-        return NodeCycleResult(
-            entry=entry,
-            node_pool_id=node_pool.node_pool_id,
-            node_pool_name=node_pool.name,
-            node_id=node_id,
-            node_name=node_name,
-            status=status,
-            work_request_id=work_request_id,
-            error=error_message,
-        )
-
-    console.print(
-        f"[bold green]✓[/bold green] Cycle completed for node [cyan]{node_name}[/cyan] "
-        f"({node_id}). Work request: [magenta]{work_request_id}[/magenta]"
-    )
     return NodeCycleResult(
         entry=entry,
         node_pool_id=node_pool.node_pool_id,
         node_pool_name=node_pool.name,
         node_id=node_id,
         node_name=node_name,
-        status=status,
+        status="IN_PROGRESS" if work_request_id else "UNKNOWN",
         work_request_id=work_request_id,
     )
 
@@ -423,31 +265,14 @@ def _cycle_node(
 def perform_node_cycles(
     entries: Sequence[ReportCluster],
     *,
-    requested_version: Optional[str],
-    filters: Dict[str, List[str]],
     grace_period: str,
     force_after_grace: bool,
-    poll_seconds: int,
-    wait_for_completion: bool,
     dry_run: bool,
 ) -> List[NodeCycleResult]:
     results: List[NodeCycleResult] = []
     clients: Dict[Tuple[str, str, str], Any] = {}
 
     for entry in entries:
-        if filters and not _entry_matches_filters(entry, filters):
-            logger.debug(
-                "Skipping cluster %s due to filters project=%s stage=%s region=%s cluster_filter=%s node_pool_filter=%s node_filter=%s",
-                entry.cluster_name,
-                filters.get("project"),
-                filters.get("stage"),
-                filters.get("region"),
-                filters.get("cluster"),
-                filters.get("node_pool"),
-                filters.get("node"),
-            )
-            continue
-
         client_key = (entry.project, entry.stage, entry.region)
         if client_key not in clients:
             profile_name = setup_session_token(entry.project, entry.stage, entry.region)
@@ -501,13 +326,6 @@ def perform_node_cycles(
                 "plane upgrades. Complete the control plane upgrade and regenerate the report before cycling nodes."
             )
 
-        if requested_version and cluster_info.kubernetes_version and requested_version != cluster_info.kubernetes_version:
-            display_warning(
-                f"Cluster {entry.cluster_name} ({entry.cluster_ocid}) control plane version "
-                f"{cluster_info.kubernetes_version} does not match requested version {requested_version}. "
-                "Continuing with node cycling."
-            )
-
         try:
             node_pools = _list_node_pools(client, entry.cluster_ocid, cluster_info.compartment_id)
         except Exception as exc:  # pragma: no cover - defensive guard
@@ -530,18 +348,7 @@ def perform_node_cycles(
             )
             continue
 
-        filtered_node_pools = [
-            node_pool for node_pool in node_pools if _node_pool_matches_filters(node_pool, filters)
-        ]
-        if not filtered_node_pools:
-            logger.info(
-                "No node pools matched filters for cluster %s (%s).",
-                entry.cluster_name,
-                entry.cluster_ocid,
-            )
-            continue
-
-        for node_pool in filtered_node_pools:
+        for node_pool in node_pools:
             try:
                 node_pool_details = _fetch_node_pool_details(client, node_pool.node_pool_id)
             except Exception as exc:  # pragma: no cover - defensive guard
@@ -572,8 +379,6 @@ def perform_node_cycles(
                 continue
 
             for node in nodes:
-                if not _node_matches_filters(node, filters):
-                    continue
                 result = _cycle_node(
                     entry,
                     node_pool,
@@ -581,8 +386,6 @@ def perform_node_cycles(
                     client,
                     grace_period=grace_period,
                     force_after_grace=force_after_grace,
-                    poll_seconds=poll_seconds,
-                    wait_for_completion=wait_for_completion,
                     dry_run=dry_run,
                 )
                 results.append(result)
@@ -649,23 +452,6 @@ def parse_arguments() -> argparse.Namespace:
         description="Cycle OKE node pools to replace worker boot volumes based on an HTML report.",
     )
     parser.add_argument("report_path", help="Path to the HTML report generated by oke_version_report.")
-    parser.add_argument("--project", help="Only cycle node pools for this project.")
-    parser.add_argument("--stage", help="Only cycle node pools for this stage.")
-    parser.add_argument("--region", help="Only cycle node pools in this region.")
-    parser.add_argument(
-        "--cluster",
-        help="Only cycle node pools for the cluster matching this name or OCID.",
-    )
-    parser.add_argument(
-        "--node-pool",
-        action="append",
-        help="Only cycle node pools matching this name or OCID. Can be provided multiple times.",
-    )
-    parser.add_argument(
-        "--node",
-        action="append",
-        help="Only cycle specific nodes by name or OCID. Can be provided multiple times.",
-    )
     parser.add_argument(
         "--grace-period",
         default="PT30M",
@@ -677,17 +463,6 @@ def parse_arguments() -> argparse.Namespace:
         help="Force deletion after the grace period elapses.",
     )
     parser.add_argument(
-        "--poll-seconds",
-        type=int,
-        default=30,
-        help="Polling interval (seconds) when waiting on work requests (default: 30).",
-    )
-    parser.add_argument(
-        "--no-wait",
-        action="store_true",
-        help="Do not wait for work requests to complete (fire-and-forget).",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show planned node cycles without calling OCI APIs.",
@@ -696,10 +471,6 @@ def parse_arguments() -> argparse.Namespace:
         "--verbose",
         action="store_true",
         help="Enable debug logging.",
-    )
-    parser.add_argument(
-        "--target-version",
-        help="Optional Kubernetes version to validate against the control plane before cycling.",
     )
     return parser.parse_args()
 
@@ -720,19 +491,13 @@ def main() -> int:
             console.print(f"[dim]- {line}[/dim]")
         return 1
 
-    filters = _build_filters(args)
-
     console.print("🚀 Initiating OKE node cycling workflow...")
     console.print(f"📄 Using report: {report_path}")
 
     results = perform_node_cycles(
         entries,
-        requested_version=args.target_version,
-        filters=filters,
         grace_period=args.grace_period,
         force_after_grace=args.force_after_grace,
-        poll_seconds=args.poll_seconds,
-        wait_for_completion=not args.no_wait,
         dry_run=args.dry_run,
     )
 

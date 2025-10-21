@@ -188,13 +188,16 @@ class NodePoolImageUpdater:
         poll_seconds: int = DEFAULT_POLL_SECONDS,
         log_dir: Optional[Path] = None,
         meta_file: Optional[Path] = None,
+        verbose: bool = False,
     ) -> None:
         self.csv_path = csv_path
         self.config_file = config_file
         self.dry_run = dry_run
         self.poll_seconds = poll_seconds
+        self.verbose = verbose
+        self._log_level = logging.DEBUG if verbose else logging.INFO
         self.logger = logging.getLogger(LOGGER_NAME)
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(self._log_level)
         self.console = Console()
 
         self.log_dir = log_dir if log_dir else determine_default_log_dir()
@@ -329,11 +332,11 @@ class NodePoolImageUpdater:
         formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
-        file_handler.setLevel(logging.INFO)
+        file_handler.setLevel(self._log_level)
         file_handler.setFormatter(formatter)
 
         stream_handler = logging.StreamHandler(sys.stdout)
-        stream_handler.setLevel(logging.INFO)
+        stream_handler.setLevel(self._log_level)
         stream_handler.setFormatter(formatter)
 
         self.logger.handlers.clear()
@@ -2645,6 +2648,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=DEFAULT_POLL_SECONDS,
         help="Polling interval in seconds while waiting on work requests (default: %(default)s)",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable debug logging for the image bump workflow.",
+    )
     return parser.parse_args(argv)
 
 
@@ -2667,6 +2675,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         dry_run=args.dry_run,
         poll_seconds=args.poll_seconds,
         meta_file=meta_file,
+        verbose=args.verbose,
     )
     return updater.run()
 
