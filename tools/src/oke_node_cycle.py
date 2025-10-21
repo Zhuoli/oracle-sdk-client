@@ -29,7 +29,7 @@ from oci.container_engine.models import (
 from oci_client.models import OKEClusterInfo, OKENodePoolInfo
 from oci_client.utils.display import display_warning
 from oci_client.utils.session import create_oci_client, setup_session_token
-from oke_upgrade import ReportCluster, load_clusters_from_report
+from oke_upgrade import ReportCluster, load_clusters_from_report, _ReportHTMLParser
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -597,6 +597,45 @@ def _summarize(results: Iterable[NodeCycleResult]) -> Tuple[int, int, int]:
     return initiated, skipped, failures
 
 
+def _diagnose_report(report_path: Path) -> List[str]:
+    """Provide context when the HTML report does not produce any cluster entries."""
+    diagnostics: List[str] = []
+    try:
+        parser = _ReportHTMLParser()
+        html_content = report_path.read_text(encoding="utf-8")
+        parser.feed(html_content)
+    except Exception as exc:  # pragma: no cover - defensive
+        return [f"Failed to parse report {report_path}: {exc}"]
+
+    total_rows = len(parser.rows)
+    if total_rows == 0:
+        diagnostics.append(
+            "Report parser did not find any <tbody> rows. Ensure the report was generated with the latest tooling."
+        )
+        return diagnostics
+
+    diagnostics.append(f"Report parser captured {total_rows} row(s).")
+
+    short_rows: List[Tuple[int, int, List[str]]] = []
+    for idx, row in enumerate(parser.rows, start=1):
+        if len(row) < 9:
+            short_rows.append((idx, len(row), row))
+
+    if short_rows:
+        diagnostics.append(
+            "The following row(s) contain fewer than 9 columns (project/stage/region/... columns are required):"
+        )
+        for idx, length, row in short_rows[:5]:
+            sample = ", ".join(row[: min(len(row), 4)])
+            diagnostics.append(f"  Row {idx}: {length} column(s). Sample data: {sample}")
+        if len(short_rows) > 5:
+            diagnostics.append(f"  … {len(short_rows) - 5} additional row(s) omitted.")
+    else:
+        diagnostics.append("All parsed rows have the expected number of columns.")
+
+    return diagnostics
+
+
 def configure_logging(verbose: bool = False) -> None:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -677,6 +716,8 @@ def main() -> int:
     entries = load_clusters_from_report(report_path)
     if not entries:
         console.print("[bold red]✗ No clusters found in the provided report.[/bold red]")
+        for line in _diagnose_report(report_path):
+            console.print(f"[dim]- {line}[/dim]")
         return 1
 
     filters = _build_filters(args)

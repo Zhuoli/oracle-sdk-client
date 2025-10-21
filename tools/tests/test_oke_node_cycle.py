@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import oke_node_cycle
 from oke_node_cycle import NodeCycleResult, perform_node_cycles
 from oke_upgrade import ReportCluster
 from oci_client.models import OKEClusterInfo, OKENodePoolInfo
@@ -111,3 +112,18 @@ def test_perform_node_cycles_dry_run(monkeypatch, sample_entry):
     assert len(results) == 1
     assert results[0].skipped is True
     assert results[0].status == "DRY_RUN"
+def test_diagnose_report_flags_short_rows(tmp_path):
+    html = """<!DOCTYPE html>
+<html><body>
+<table>
+  <tbody>
+    <tr><td>only</td><td>three</td><td>columns</td></tr>
+  </tbody>
+</table>
+</body></html>
+"""
+    report_path = tmp_path / "report.html"
+    report_path.write_text(html, encoding="utf-8")
+
+    diagnostics = oke_node_cycle._diagnose_report(report_path)
+    assert any("fewer than 9 columns" in line for line in diagnostics)
