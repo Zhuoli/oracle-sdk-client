@@ -253,6 +253,11 @@ def perform_cluster_upgrades(
             )
             continue
 
+        console.print(
+            f"[cyan]Processing cluster[/cyan] [bold]{entry.cluster_name}[/bold] "
+            f"({entry.cluster_ocid}) in region [cyan]{entry.region}[/cyan]..."
+        )
+
         normalized_request = _extract_version(requested_version) if requested_version else None
         report_target_version = choose_target_version(entry.available_upgrades, requested_version)
 
@@ -514,7 +519,12 @@ def main() -> int:
     successes = sum(1 for result in results if result.success and not args.dry_run)
     dry_runs = sum(1 for result in results if result.success and args.dry_run)
     failures = sum(1 for result in results if not result.success)
+    processed = len(results)
+    total_entries = len(entries)
 
+    console.print(
+        f"[cyan]Processed {processed} of {total_entries} cluster entr{'y' if total_entries == 1 else 'ies'} from the report.[/cyan]"
+    )
     if args.dry_run:
         console.print(
             f"[bold blue]Summary:[/bold blue] planned {dry_runs} upgrade(s); "
