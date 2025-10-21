@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from rich.console import Console
 from rich.logging import RichHandler
 
+from oci_client.models import OKEClusterInfo
 from oci_client.utils.display import display_warning
 from oci_client.utils.session import create_oci_client, setup_session_token
 
@@ -303,7 +304,7 @@ def perform_cluster_upgrades(
             clients[cache_key] = client
 
         try:
-            cluster_details = client.get_oke_cluster(entry.cluster_ocid)  # type: ignore[attr-defined]
+            cluster_details = _resolve_cluster_details(client, entry.cluster_ocid)
         except Exception as exc:  # pragma: no cover - defensive handling
             error_message = (
                 f"Failed to fetch cluster details for {entry.cluster_name} "
@@ -380,6 +381,34 @@ def perform_cluster_upgrades(
             )
 
     return results
+
+
+def _resolve_cluster_details(client: Any, cluster_id: str) -> OKEClusterInfo:
+    """
+    Retrieve cluster details either via the dedicated helper or by directly querying
+    the Container Engine client (maintains compatibility with older client versions).
+    """
+    if hasattr(client, "get_oke_cluster"):
+        return client.get_oke_cluster(cluster_id)  # type: ignore[attr-defined]
+
+    ce_client = getattr(client, "container_engine_client", None)
+    if ce_client is None:
+        raise AttributeError("OCI client does not expose container_engine_client")
+
+    cluster = ce_client.get_cluster(cluster_id).data
+    available_upgrades_attr = getattr(cluster, "available_kubernetes_upgrades", None)
+    if available_upgrades_attr is None:
+        available_upgrades_attr = getattr(cluster, "available_upgrades", None)
+    available_upgrades = list(available_upgrades_attr or [])
+
+    return OKEClusterInfo(
+        cluster_id=cluster_id,
+        name=getattr(cluster, "name", cluster_id),
+        kubernetes_version=getattr(cluster, "kubernetes_version", None),
+        lifecycle_state=getattr(cluster, "lifecycle_state", None),
+        compartment_id=getattr(cluster, "compartment_id", None),
+        available_upgrades=available_upgrades,
+    )
 
 
 def configure_logging(verbose: bool = False) -> None:

@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Tuple
 
 import pytest
@@ -158,3 +159,54 @@ def test_perform_cluster_upgrades_triggers_upgrade(monkeypatch: pytest.MonkeyPat
     assert len(results) == 1
     assert results[0].success is True
     assert results[0].work_request_id == "work-request-123"
+
+
+def test_perform_cluster_upgrades_uses_container_engine_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = ReportCluster(
+        project="remote-observer",
+        stage="dev",
+        region="us-phoenix-1",
+        cluster_name="cluster-a",
+        cluster_version="1.32.1",
+        available_upgrades=["1.34.1"],
+        compartment_ocid="ocid1.compartment.oc1..example",
+        cluster_ocid="ocid1.cluster.oc1..clusterA",
+    )
+
+    class FakeCEClient:
+        def get_cluster(self, cluster_id: str) -> SimpleNamespace:
+            assert cluster_id == entry.cluster_ocid
+            cluster = SimpleNamespace(
+                name="cluster-a",
+                kubernetes_version="1.32.1",
+                lifecycle_state="ACTIVE",
+                compartment_id=entry.compartment_ocid,
+                available_kubernetes_upgrades=["v1.34.1"],
+            )
+            return SimpleNamespace(data=cluster)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.container_engine_client = FakeCEClient()
+            self.calls: List[Tuple[str, str]] = []
+
+        def upgrade_oke_cluster(self, cluster_id: str, target_version: str) -> str:
+            self.calls.append((cluster_id, target_version))
+            return "work-request-234"
+
+    fake_client = FakeClient()
+
+    monkeypatch.setattr("oke_upgrade.setup_session_token", lambda *args, **kwargs: "profile-name")  # type: ignore
+    monkeypatch.setattr("oke_upgrade.create_oci_client", lambda region, profile: fake_client)  # type: ignore
+
+    results = perform_cluster_upgrades(
+        [entry],
+        requested_version=None,
+        dry_run=False,
+        filters={},
+    )
+
+    assert fake_client.calls == [("ocid1.cluster.oc1..clusterA", "v1.34.1")]
+    assert len(results) == 1
+    assert results[0].success is True
+    assert results[0].work_request_id == "work-request-234"
