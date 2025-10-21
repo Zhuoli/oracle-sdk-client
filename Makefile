@@ -7,7 +7,7 @@ DESC_COLOR=\033[0;37m
 TITLE_COLOR=\033[1;33m
 RESET=\033[0m
 
-.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates recycle-node-pools delete-bucket delete-oke-cluster oke-version-report oke-upgrade oke-upgrade-node-pools
+.PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates oke-node-pool-bump delete-bucket delete-oke-cluster oke-version-report oke-upgrade oke-upgrade-node-pools
 
 # Default target
 help:
@@ -22,7 +22,7 @@ help:
 	@printf "  $(CMD_COLOR)oke-upgrade-node-pools$(RESET) $(DESC_COLOR)Cascade node pool upgrades after the control plane$(RESET)\n"
 	@printf "  $(CMD_COLOR)ssh-help$(RESET)      $(DESC_COLOR)Show SSH sync configuration help$(RESET)\n"
 	@printf "  $(CMD_COLOR)image-updates$(RESET) $(DESC_COLOR)Check for newer images for compute instances (by project/stage)$(RESET)\n"
-	@printf "  $(CMD_COLOR)recycle-node-pools$(RESET) $(DESC_COLOR)CSV=<file> [DRY_RUN=1] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)]$(RESET)\n"
+	@printf "  $(CMD_COLOR)oke-node-pool-bump$(RESET) $(DESC_COLOR)CSV=<file> [DRY_RUN=1] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)]$(RESET)\n"
 	@printf "  $(CMD_COLOR)delete-bucket$(RESET) $(DESC_COLOR)PROJECT=<name> STAGE=<env> REGION=<id> BUCKET=<bucket> [NAMESPACE=<override>]$(RESET)\n"
 	@printf "  $(CMD_COLOR)delete-oke-cluster$(RESET) $(DESC_COLOR)PROJECT=<name> STAGE=<env> REGION=<id> CLUSTER_ID=<ocid> [SKIP_NODE_POOLS=1]$(RESET)\n\n"
 	@printf "$(TITLE_COLOR)Development Commands:$(RESET)\n"
@@ -273,14 +273,14 @@ image-updates:
 	cd tools && poetry run python src/check_image_updates.py $(PROJECT) $(STAGE)
 
 
-# OKE node pool recycling
-recycle-node-pools:
+# OKE node pool image bump
+oke-node-pool-bump:
 	@if [ -z "$(CSV)" ]; then \
 		echo "❌ Error: CSV=<file> is required"; \
-			echo "Usage: make recycle-node-pools CSV=oke_nodes.csv [DRY_RUN=1] [META=tools/meta.yaml] [CONFIG=~/.oci/config]"; \
+			echo "Usage: make oke-node-pool-bump CSV=oke_nodes.csv [DRY_RUN=1] [META=tools/meta.yaml] [CONFIG=~/.oci/config]"; \
 		exit 1; \
 	fi
-	@echo "♻️  Recycling OKE node pools from $(CSV)"
+	@echo "⬆️  Bumping OKE node pool images from $(CSV)"
 	@DRY_RUN_FLAG=""; \
 	if [ "$(DRY_RUN)" = "1" ] || [ "$(DRY_RUN)" = "true" ] || [ "$(DRY_RUN)" = "TRUE" ] || [ "$(DRY_RUN)" = "yes" ] || [ "$(DRY_RUN)" = "YES" ]; then \
 		DRY_RUN_FLAG="--dry-run"; \

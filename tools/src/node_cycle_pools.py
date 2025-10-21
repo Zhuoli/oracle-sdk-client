@@ -1,12 +1,13 @@
-"""OCI node pool and instance pool recycling utility.
+"""OKE node pool image bump utility.
 
 Reads a CSV file describing compute hosts slated for operating system patching,
 identifies their backing pools (OKE node pools or compute instance pools) using
-the same meta.yaml mapping as ``ssh_sync``, and performs an automated recycle
-with logging suitable for production change records.
+the same meta.yaml mapping as ``ssh_sync``, and bumps their images when a newer
+version is available. The workflow mirrors the production change records
+operators expect while avoiding unnecessary churn when already up to date.
 
 Supports:
-- OKE Node Pools: Automatic node cycling via pool-level update
+- OKE Node Pools: Automatically switch to the target node image and rely on OCI cycling
 - Instance Pools: Update instance configuration + rolling detach/attach
 """
 
@@ -59,7 +60,7 @@ import yaml
 from oci_client.client import OCIClient
 from oci_client.utils.session import create_oci_client, setup_session_token
 
-LOGGER_NAME = "oci_node_pool_recycler"
+LOGGER_NAME = "oci_node_pool_image_bump"
 DEFAULT_POLL_SECONDS = 30
 TERMINAL_WORK_REQUEST_STATES = {"SUCCEEDED", "FAILED", "CANCELED"}
 ACTIVE_INSTANCE_STATES = {
@@ -80,7 +81,7 @@ class CsvInstruction:
 
 
 @dataclass
-class NodeRecyclePlan:
+class NodeImageUpdatePlan:
     host_name: str
     compartment_id: str
     instance_id: str
@@ -92,15 +93,15 @@ class NodeRecyclePlan:
 
 
 @dataclass
-class NodePoolAction:
+class NodePoolUpdateAction:
     node_pool_id: str
     new_image_name: str
-    nodes: List[NodeRecyclePlan]
+    nodes: List[NodeImageUpdatePlan]
     context: "CompartmentContext"
 
 
 @dataclass
-class InstanceRecyclePlan:
+class InstanceImageUpdatePlan:
     host_name: str
     compartment_id: str
     instance_id: str
@@ -112,10 +113,10 @@ class InstanceRecyclePlan:
 
 
 @dataclass
-class InstancePoolAction:
+class InstancePoolUpdateAction:
     instance_pool_id: str
     new_image_name: str
-    instances: List[InstanceRecyclePlan]
+    instances: List[InstanceImageUpdatePlan]
     context: "CompartmentContext"
 
 
@@ -178,7 +179,7 @@ class CompartmentContext:
     region: str
 
 
-class NodePoolRecycler:
+class NodePoolImageUpdater:
     def __init__(
         self,
         csv_path: Path,
@@ -230,14 +231,14 @@ class NodePoolRecycler:
     # Public execution entrypoint
     # ------------------------------------------------------------------
     def run(self) -> int:
-        """Main entry point for the recycler workflow."""
+        """Main entry point for the node pool image bump workflow."""
         instructions = self._load_instructions()
         if not instructions:
             if self._errors:
                 self.logger.error("No actionable rows found in %s", self.csv_path)
                 return 1
             self.logger.info(
-                "No actionable rows found in %s; nothing to recycle.",
+                "No actionable rows found in %s; nothing to bump.",
                 self.csv_path,
             )
             self._generate_report()
@@ -257,8 +258,7 @@ class NodePoolRecycler:
             for issue in self._errors:
                 self.logger.error(issue)
             return 1
-
-        self.logger.info("All requested pool recycle operations completed successfully")
+        self.logger.info("All requested node pool image bump operations completed successfully")
         return 0
 
     # ------------------------------------------------------------------
@@ -319,8 +319,8 @@ class NodePoolRecycler:
         """Initialize stream & file logging for this run."""
         self.log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        log_path = self.log_dir / f"node_pool_recycle_{timestamp}.log"
-        report_path = self.log_dir / f"node_pool_recycle_{timestamp}.html"
+        log_path = self.log_dir / f"node_pool_image_bump_{timestamp}.log"
+        report_path = self.log_dir / f"node_pool_image_bump_{timestamp}.html"
         self._timestamp_label = timestamp
         self._log_path = log_path
         self._report_path = report_path
@@ -517,14 +517,14 @@ class NodePoolRecycler:
 
     def _build_plans(
         self, instructions: Iterable[CsvInstruction]
-    ) -> Tuple[List[NodePoolAction], List[InstancePoolAction]]:
+    ) -> Tuple[List[NodePoolUpdateAction], List[InstancePoolUpdateAction]]:
         """Group CSV instructions by pool type (OKE node pool or instance pool).
 
         Returns:
             Tuple of (node_pool_actions, instance_pool_actions)
         """
-        node_pool_plans: Dict[Tuple[str, str, str, str], NodePoolAction] = {}
-        instance_pool_plans: Dict[Tuple[str, str, str, str], InstancePoolAction] = {}
+        node_pool_plans: Dict[Tuple[str, str, str, str], NodePoolUpdateAction] = {}
+        instance_pool_plans: Dict[Tuple[str, str, str, str], InstancePoolUpdateAction] = {}
 
         for instruction in instructions:
             context = self._compartment_lookup.get(instruction.compartment_id)
@@ -614,7 +614,7 @@ class NodePoolRecycler:
         instance_pool_list = [action for action in instance_pool_plans.values() if action.instances]
 
         self.logger.info(
-            "Prepared recycle plan: %d OKE node pool(s) with %d node(s), "
+            "Prepared image bump plan: %d OKE node pool(s) with %d node(s), "
             "%d instance pool(s) with %d instance(s)",
             len(node_pool_list),
             sum(len(action.nodes) for action in node_pool_list),
@@ -629,7 +629,7 @@ class NodePoolRecycler:
         instance: oci.core.models.Instance,
         node_pool_id: str,
         context: CompartmentContext,
-        plans: Dict[Tuple[str, str, str, str], NodePoolAction],
+        plans: Dict[Tuple[str, str, str, str], NodePoolUpdateAction],
     ) -> None:
         """Process an instance that belongs to an OKE node pool."""
         resolved_image = self._resolve_image_name(context, instance)
@@ -638,7 +638,7 @@ class NodePoolRecycler:
             and resolved_image
             and instruction.current_image.strip().lower() != resolved_image.strip().lower()
         ):
-            # Flag drift early so the runbook reflects what is actually running before recycle.
+            # Flag drift early so the runbook reflects what is actually running before the bump.
             self.logger.warning(
                 "Image mismatch for host %s: CSV=%s actual=%s",
                 instruction.host_name,
@@ -646,7 +646,7 @@ class NodePoolRecycler:
                 resolved_image,
             )
 
-        plan_entry = NodeRecyclePlan(
+        plan_entry = NodeImageUpdatePlan(
             host_name=instruction.host_name,
             compartment_id=instruction.compartment_id,
             instance_id=instance.id,
@@ -659,7 +659,7 @@ class NodePoolRecycler:
 
         key = (*self._context_key(context), node_pool_id)
         if key not in plans:
-            plans[key] = NodePoolAction(
+            plans[key] = NodePoolUpdateAction(
                 node_pool_id=node_pool_id,
                 new_image_name=instruction.new_image_name,
                 nodes=[plan_entry],
@@ -698,7 +698,7 @@ class NodePoolRecycler:
         instance: oci.core.models.Instance,
         instance_pool_id: str,
         context: CompartmentContext,
-        plans: Dict[Tuple[str, str, str, str], InstancePoolAction],
+        plans: Dict[Tuple[str, str, str, str], InstancePoolUpdateAction],
     ) -> None:
         """Process an instance that belongs to a compute instance pool."""
         resolved_image = self._resolve_image_name(context, instance)
@@ -714,7 +714,7 @@ class NodePoolRecycler:
                 resolved_image,
             )
 
-        plan_entry = InstanceRecyclePlan(
+        plan_entry = InstanceImageUpdatePlan(
             host_name=instruction.host_name,
             compartment_id=instruction.compartment_id,
             instance_id=instance.id,
@@ -727,7 +727,7 @@ class NodePoolRecycler:
 
         key = (*self._context_key(context), instance_pool_id)
         if key not in plans:
-            plans[key] = InstancePoolAction(
+            plans[key] = InstancePoolUpdateAction(
                 instance_pool_id=instance_pool_id,
                 new_image_name=instruction.new_image_name,
                 instances=[plan_entry],
@@ -1602,8 +1602,8 @@ class NodePoolRecycler:
     # ------------------------------------------------------------------
     def _execute(
         self,
-        node_pool_plans: Iterable[NodePoolAction],
-        instance_pool_plans: Iterable[InstancePoolAction]
+        node_pool_plans: Iterable[NodePoolUpdateAction],
+        instance_pool_plans: Iterable[InstancePoolUpdateAction]
     ) -> None:
         """Execute the planned image upgrades and recycling operations for both pool types."""
 
@@ -1714,7 +1714,7 @@ class NodePoolRecycler:
             post_state, post_image, post_nodes = self._capture_node_pool_health(
                 action.context, action.node_pool_id
             )
-            # Capture the observed state after recycle so the report reflects real OCI health.
+            # Capture the observed state after the image bump so the report reflects real OCI health.
             summary.post_state = post_state
             summary.post_image_name = post_image
             summary.post_node_states = post_nodes
@@ -1794,7 +1794,7 @@ class NodePoolRecycler:
         context: CompartmentContext,
         instance_pool_id: str,
         new_image_name: str,
-        instances: List[InstanceRecyclePlan],
+        instances: List[InstanceImageUpdatePlan],
         summary: InstancePoolSummary,
     ) -> Dict[str, Any]:
         """Cycle an instance pool by updating config and detaching old instances.
@@ -2037,7 +2037,7 @@ class NodePoolRecycler:
         self,
         context: CompartmentContext,
         instance_pool_id: str,
-        instance_plan: InstanceRecyclePlan,
+        instance_plan: InstanceImageUpdatePlan,
     ) -> WorkRequestResult:
         """Detach an instance from the pool (pool will create replacement)."""
         cm_client = self._get_cm_client(context)
@@ -2331,7 +2331,7 @@ class NodePoolRecycler:
             self.logger.info("Opened report in default browser: %s", report_path)
 
     def _generate_report(self) -> None:
-        "Emit an HTML report summarizing the recycle operation."
+        "Emit an HTML report summarizing the node pool image bump operation."
         if not self._report_path:
             return
 
@@ -2364,7 +2364,7 @@ class NodePoolRecycler:
         html.append("<head>")
         html.append('<meta charset="utf-8"/>')
         html.append(
-            f"<title>Pool Recycle Report (OKE + Instance Pools) - {html_escape(self._timestamp_label or generated_at_display)}</title>"
+            f"<title>OKE Node Pool Image Bump Report - {html_escape(self._timestamp_label or generated_at_display)}</title>"
         )
         html.append(
             "<style>"
@@ -2392,7 +2392,7 @@ class NodePoolRecycler:
         )
         html.append("</head>")
         html.append("<body>")
-        html.append("<h1>Pool Recycle Report (OKE Node Pools + Instance Pools)</h1>")
+        html.append("<h1>OKE Node Pool Image Bump Report</h1>")
 
         html.append("<section>")
         html.append("<h2>Run Summary</h2>")
@@ -2605,15 +2605,19 @@ class NodePoolRecycler:
         self._open_report_in_browser()
 
         self.logger.info(
-            "Recycle summary: %d total row(s), %d resolved, %d skipped",
+            "Image bump summary: %d total row(s), %d resolved, %d skipped",
             self._total_rows,
             self._resolved_rows,
             len(self._missing_hosts),
         )
 
 
+# Backwards compatibility for legacy imports.
+NodePoolRecycler = NodePoolImageUpdater
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Recycle OKE node pools based on CSV input.")
+    parser = argparse.ArgumentParser(description="Bump OKE node pool images based on CSV input.")
     parser.add_argument(
         "--csv-path",
         required=True,
@@ -2657,14 +2661,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     config_file = args.config_file.expanduser().resolve() if args.config_file else None
     meta_file = args.meta_file.expanduser().resolve() if args.meta_file else None
 
-    recycler = NodePoolRecycler(
+    updater = NodePoolImageUpdater(
         csv_path=csv_path,
         config_file=config_file,
         dry_run=args.dry_run,
         poll_seconds=args.poll_seconds,
         meta_file=meta_file,
     )
-    return recycler.run()
+    return updater.run()
 
 
 if __name__ == "__main__":

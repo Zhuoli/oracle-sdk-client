@@ -4,7 +4,7 @@ import webbrowser
 
 import pytest
 
-from node_cycle_pools import NodePoolRecycler
+from node_cycle_pools import NodePoolImageUpdater
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +25,7 @@ def _write_meta(path: Path) -> None:
     path.write_text("projects: {}\n", encoding="utf-8")
 
 
-def test_recycler_treats_empty_instruction_set_as_success(tmp_path: Path) -> None:
+def test_updater_treats_empty_instruction_set_as_success(tmp_path: Path) -> None:
     csv_path = tmp_path / "report.csv"
     meta_path = tmp_path / "meta.yaml"
     log_dir = tmp_path / "logs"
@@ -33,7 +33,7 @@ def test_recycler_treats_empty_instruction_set_as_success(tmp_path: Path) -> Non
     _write_csv(csv_path)
     _write_meta(meta_path)
 
-    recycler = NodePoolRecycler(
+    updater = NodePoolImageUpdater(
         csv_path=csv_path,
         config_file=None,
         dry_run=False,
@@ -42,8 +42,8 @@ def test_recycler_treats_empty_instruction_set_as_success(tmp_path: Path) -> Non
         meta_file=meta_path,
     )
 
-    exit_code = recycler.run()
+    exit_code = updater.run()
 
     assert exit_code == 0
-    assert recycler._errors == []
-    assert any(log_dir.glob("node_pool_recycle_*.html")), "Report file was not generated"
+    assert updater._errors == []
+    assert any(log_dir.glob("node_pool_image_bump_*.html")), "Report file was not generated"
