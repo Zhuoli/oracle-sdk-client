@@ -6,6 +6,7 @@ CMD_COLOR=\033[1;36m
 DESC_COLOR=\033[0;37m
 TITLE_COLOR=\033[1;33m
 RESET=\033[0m
+POLL_SECONDS ?= 30
 
 .PHONY: help install test ssh-sync clean format lint type-check dev-setup ssh-sync-remote-observer-dev ssh-sync-remote-observer-staging ssh-sync-remote-observer-prod ssh-sync-today-all-dev ssh-sync-today-all-staging ssh-sync-today-all-prod ssh-help test-coverage check setup-example quickstart image-updates oke-node-pool-bump oke-node-cycle delete-bucket delete-oke-cluster oke-version-report oke-upgrade oke-upgrade-node-pools
 
@@ -25,7 +26,7 @@ help:
 	@printf "  $(CMD_COLOR)oke-node-pool-bump$(RESET) $(DESC_COLOR)CSV=<file> [DRY_RUN=true] [CONFIG=~/.oci/config] [POLL_SECONDS=$(POLL_SECONDS)] [VERBOSE=true]$(RESET)\n"
 	@printf "  $(CMD_COLOR)oke-node-cycle$(RESET) $(DESC_COLOR)REPORT=<file> [GRACE_PERIOD=PT30M] [FORCE_AFTER_GRACE=true] [DRY_RUN=true] [VERBOSE=true]$(RESET)\n"
 	@printf "  $(CMD_COLOR)delete-bucket$(RESET) $(DESC_COLOR)PROJECT=<name> STAGE=<env> REGION=<id> BUCKET=<bucket> [NAMESPACE=<override>]$(RESET)\n"
-	@printf "  $(CMD_COLOR)delete-oke-cluster$(RESET) $(DESC_COLOR)PROJECT=<name> STAGE=<env> REGION=<id> CLUSTER_ID=<ocid> [SKIP_NODE_POOLS=1]$(RESET)\n\n"
+	@printf "  $(CMD_COLOR)delete-oke-cluster$(RESET) $(DESC_COLOR)PROJECT=<name> STAGE=<env> REGION=<id> CLUSTER_ID=<ocid> [SKIP_NODE_POOLS=true]$(RESET)\n\n"
 	@printf "$(TITLE_COLOR)Development Commands:$(RESET)\n"
 	@printf "  $(CMD_COLOR)test$(RESET)          $(DESC_COLOR)Run all tests$(RESET)\n"
 	@printf "  $(CMD_COLOR)test-verbose$(RESET)  $(DESC_COLOR)Run tests with verbose output$(RESET)\n"
@@ -98,7 +99,7 @@ oke-upgrade:
 	@echo "🚀 Triggering OKE cluster upgrades..."
 	@if [ -z "$(REPORT)" ]; then \
 		echo "❌ Error: REPORT=<path_to_report.html> is required"; \
-		echo "Usage: make oke-upgrade REPORT=reports/oke_versions_project_stage.html [TARGET_VERSION=1.34.1] [PROJECT=<name>] [STAGE=<env>] [REGION_FILTER=<id>] [CLUSTER=<ocid_or_name>] [DRY_RUN=1] [VERBOSE=1]"; \
+		echo "Usage: make oke-upgrade REPORT=reports/oke_versions_project_stage.html [TARGET_VERSION=1.34.1] [PROJECT=<name>] [STAGE=<env>] [REGION_FILTER=<id>] [CLUSTER=<ocid_or_name>] [DRY_RUN=true] [VERBOSE=true]"; \
 		exit 1; \
 	fi
 	@REPORT_ARG=""; \
@@ -142,7 +143,7 @@ oke-upgrade-node-pools:
 	@echo "🌊 Triggering OKE node pool upgrades..."
 	@if [ -z "$(REPORT)" ]; then \
 		echo "❌ Error: REPORT=<path_to_report.html> is required"; \
-		echo "Usage: make oke-upgrade-node-pools REPORT=reports/oke_versions_project_stage.html [TARGET_VERSION=1.34.1] [PROJECT=<name>] [STAGE=<env>] [REGION_FILTER=<id>] [CLUSTER=<ocid_or_name>] [NODE_POOL=<id_or_name>] [DRY_RUN=1] [VERBOSE=1]"; \
+		echo "Usage: make oke-upgrade-node-pools REPORT=reports/oke_versions_project_stage.html [TARGET_VERSION=1.34.1] [PROJECT=<name>] [STAGE=<env>] [REGION_FILTER=<id>] [CLUSTER=<ocid_or_name>] [NODE_POOL=<id_or_name>] [DRY_RUN=true] [VERBOSE=true]"; \
 		exit 1; \
 	fi
 	@REPORT_ARG=""; \
@@ -275,7 +276,6 @@ image-updates:
 
 
 # OKE node pool image bump
-# OKE node pool image bump
 oke-node-pool-bump:
 	@if [ -z "$(CSV)" ]; then \
 		echo "❌ Error: CSV=<file> is required"; \
@@ -354,7 +354,7 @@ delete-bucket:
 delete-oke-cluster:
 	@if [ -z "$(PROJECT)" ] || [ -z "$(STAGE)" ] || [ -z "$(REGION)" ] || [ -z "$(CLUSTER_ID)" ]; then \
 		echo "❌ Error: PROJECT, STAGE, REGION, and CLUSTER_ID parameters are required"; \
-		echo "Usage: make delete-oke-cluster PROJECT=<project> STAGE=<stage> REGION=<region> CLUSTER_ID=<ocid> [SKIP_NODE_POOLS=1]"; \
+		echo "Usage: make delete-oke-cluster PROJECT=<project> STAGE=<stage> REGION=<region> CLUSTER_ID=<ocid> [SKIP_NODE_POOLS=true]"; \
 		exit 1; \
 	fi
 	@echo "🗑️  Deleting OKE cluster '$(CLUSTER_ID)'..."
