@@ -254,30 +254,34 @@ def perform_cluster_upgrades(
             continue
 
         normalized_request = _extract_version(requested_version) if requested_version else None
-        target_version = choose_target_version(entry.available_upgrades, requested_version)
+        report_target_version = choose_target_version(entry.available_upgrades, requested_version)
 
-        if not target_version:
-            available_text = ", ".join(entry.available_upgrades) or "None"
-            requested_text = normalized_request or requested_version or "latest"
-            message = (
-                f"No upgrade candidates for cluster {entry.cluster_name} "
-                f"({entry.cluster_ocid}) in {entry.region}. "
-                f"Available upgrades: {available_text}. Requested: {requested_text}."
-            )
-            display_warning(message)
-            results.append(
-                UpgradeResult(entry=entry, target_version=None, work_request_id=None, success=False, error=message)
+        if not entry.available_upgrades and not requested_version:
+            logger.debug(
+                "Skipping cluster %s (%s) in %s: no upgrades reported in HTML and no explicit target.",
+                entry.cluster_name,
+                entry.cluster_ocid,
+                entry.region,
             )
             continue
 
         if dry_run:
-            console.print(
-                f"[yellow]DRY RUN[/yellow] Would upgrade [cyan]{entry.cluster_name}[/cyan] "
-                f"({entry.cluster_ocid}) in [cyan]{entry.region}[/cyan] to [green]{target_version}[/green]."
-            )
-            results.append(
-                UpgradeResult(entry=entry, target_version=target_version, work_request_id=None, success=True)
-            )
+            if report_target_version:
+                console.print(
+                    f"[yellow]DRY RUN[/yellow] Would upgrade [cyan]{entry.cluster_name}[/cyan] "
+                    f"({entry.cluster_ocid}) in [cyan]{entry.region}[/cyan] to [green]{report_target_version}[/green]."
+                )
+                results.append(
+                    UpgradeResult(entry=entry, target_version=report_target_version, work_request_id=None, success=True)
+                )
+            else:
+                console.print(
+                    f"[yellow]DRY RUN[/yellow] Cluster [cyan]{entry.cluster_name}[/cyan] "
+                    f"({entry.cluster_ocid}) in [cyan]{entry.region}[/cyan] has no reported upgrades."
+                )
+                results.append(
+                    UpgradeResult(entry=entry, target_version=None, work_request_id=None, success=False)
+                )
             continue
 
         cache_key = (entry.project, entry.stage, entry.region)
@@ -294,7 +298,7 @@ def perform_cluster_upgrades(
                 results.append(
                     UpgradeResult(
                         entry=entry,
-                        target_version=target_version,
+                        target_version=report_target_version,
                         work_request_id=None,
                         success=False,
                         error=error_message,
@@ -314,7 +318,7 @@ def perform_cluster_upgrades(
             results.append(
                 UpgradeResult(
                     entry=entry,
-                    target_version=target_version,
+                    target_version=report_target_version,
                     work_request_id=None,
                     success=False,
                     error=str(exc),
@@ -324,12 +328,12 @@ def perform_cluster_upgrades(
 
         api_target_version = choose_target_version(
             cluster_details.available_upgrades,
-            requested_version or target_version,
+            requested_version or report_target_version,
         )
 
         if not api_target_version:
             available_text = ", ".join(cluster_details.available_upgrades) or "None"
-            requested_text = requested_version or target_version
+            requested_text = requested_version or report_target_version
             message = (
                 f"OCI reports no matching upgrade for cluster {entry.cluster_name} "
                 f"({entry.cluster_ocid}) in {entry.region}. "
