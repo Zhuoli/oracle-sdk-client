@@ -141,7 +141,7 @@ oke-upgrade-node-pools:
 	@echo "🌊 Triggering OKE node pool upgrades..."
 	@if [ -z "$(REPORT)" ]; then \
 		echo "❌ Error: REPORT=<path_to_report.html> is required"; \
-		echo "Usage: make oke-upgrade-node-pools REPORT=reports/oke_versions_project_stage.html [TARGET_VERSION=1.34.1] [PROJECT=<name>] [STAGE=<env>] [REGION=<id>] [CLUSTER=<ocid_or_name>] [NODE_POOL=<id_or_name>] [DRY_RUN=1] [VERBOSE=1]"; \
+		echo "Usage: make oke-upgrade-node-pools REPORT=reports/oke_versions_project_stage.html [TARGET_VERSION=1.34.1] [PROJECT=<name>] [STAGE=<env>] [REGION_FILTER=<id>] [CLUSTER=<ocid_or_name>] [NODE_POOL=<id_or_name>] [DRY_RUN=1] [VERBOSE=1]"; \
 		exit 1; \
 	fi
 	@REPORT_ARG=""; \
@@ -162,7 +162,9 @@ oke-upgrade-node-pools:
 		STAGE_FLAG="--stage $(STAGE)"; \
 	fi; \
 	REGION_FLAG=""; \
-	if [ -n "$(REGION)" ]; then \
+	if [ -n "$(REGION_FILTER)" ]; then \
+		REGION_FLAG="--region $(REGION_FILTER)"; \
+	elif [ -z "$(REGION_FILTER)" ] && [ -z "$(REPORT)" ] && [ -n "$(REGION)" ]; then \
 		REGION_FLAG="--region $(REGION)"; \
 	fi; \
 	CLUSTER_FLAG=""; \
