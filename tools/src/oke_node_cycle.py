@@ -20,11 +20,7 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from oci import exceptions as oci_exceptions
-from oci.container_engine.models import (
-    NodeEvictionSettings,
-    ReplaceBootVolumeClusterNodeDetails,
-    UpdateNodePoolDetails,
-)
+from oci.container_engine.models import NodePoolCyclingDetails, UpdateNodePoolDetails
 
 from oci_client.models import OKEClusterInfo, OKENodePoolInfo
 from oci_client.utils.display import display_warning
@@ -34,18 +30,15 @@ from oke_upgrade import ReportCluster, load_clusters_from_report, _ReportHTMLPar
 console = Console()
 logger = logging.getLogger(__name__)
 
-SKIP_NODE_STATES = {"DELETED", "DELETING"}
 
 
 @dataclass
 class NodeCycleResult:
-    """Outcome for cycling a single node."""
+    """Outcome for cycling a node pool."""
 
     entry: ReportCluster
     node_pool_id: str
     node_pool_name: str
-    node_id: str
-    node_name: str
     status: str
     work_request_id: Optional[str]
     skipped: bool = False
@@ -140,125 +133,22 @@ def _extract_maximum_unavailable(node_pool_details: Any) -> int:
     return max(value, 1)
 
 
-def _normalize_version(value: Optional[str]) -> Optional[str]:
-    if not value:
-        return None
-    stripped = value.strip()
-    if stripped.startswith("v"):
-        stripped = stripped[1:]
-    return stripped or None
-
-
-def _ensure_node_pool_version(
-    client: Any,
-    node_pool_id: str,
-    current_version: Optional[str],
-    desired_version: Optional[str],
-) -> Optional[str]:
-    normalized_current = _normalize_version(current_version)
-    normalized_desired = _normalize_version(desired_version)
-    if not normalized_desired:
-        return current_version
-    if normalized_current == normalized_desired:
-        return current_version
-
-    ce_client = getattr(client, "container_engine_client", None)
-    if ce_client is None:
-        logger.warning("Cannot align node pool version because container_engine_client is missing")
-        return current_version
-
-    logger.info(
-        "Aligning node pool %s to Kubernetes version %s (was %s)",
-        node_pool_id,
-        normalized_desired,
-        normalized_current,
-    )
-    try:
-        ce_client.update_node_pool(
-            node_pool_id,
-            UpdateNodePoolDetails(kubernetes_version=desired_version),
-        )
-    except oci_exceptions.ServiceError as exc:
-        logger.error(
-            "Failed to align node pool %s to version %s: %s",
-            node_pool_id,
-            desired_version,
-            exc.message,
-        )
-        return current_version
-    return desired_version
 
 
 
 
-def _cycle_node(
+def _cycle_node_pool(
     entry: ReportCluster,
     node_pool: OKENodePoolInfo,
-    node: Any,
     client: Any,
     *,
     grace_period: str,
     force_after_grace: bool,
     dry_run: bool,
+    maximum_unavailable: int,
+    maximum_surge: Optional[int],
+    target_version: Optional[str],
 ) -> NodeCycleResult:
-    node_id = getattr(node, "id", None)
-    node_name = getattr(node, "name", node_id or "unknown")
-    lifecycle_state = (getattr(node, "lifecycle_state", None) or "").upper()
-
-    if not node_id:
-        message = f"Node pool {node_pool.name} contains a node without an OCID; skipping."
-        display_warning(message)
-        return NodeCycleResult(
-            entry=entry,
-            node_pool_id=node_pool.node_pool_id,
-            node_pool_name=node_pool.name,
-            node_id="N/A",
-            node_name=node_name,
-            status="SKIPPED",
-            work_request_id=None,
-            skipped=True,
-            error=message,
-        )
-
-    if lifecycle_state in SKIP_NODE_STATES:
-        logger.info(
-            "Skipping node %s (%s) in pool %s because lifecycle_state=%s",
-            node_name,
-            node_id,
-            node_pool.node_pool_id,
-            lifecycle_state,
-        )
-        return NodeCycleResult(
-            entry=entry,
-            node_pool_id=node_pool.node_pool_id,
-            node_pool_name=node_pool.name,
-            node_id=node_id,
-            node_name=node_name,
-            status=lifecycle_state or "SKIPPED",
-            work_request_id=None,
-            skipped=True,
-        )
-
-    if dry_run:
-        logger.info(
-            "[DRY RUN] Would replace boot volume for node %s (%s) in pool %s (%s) within cluster %s.",
-            node_name,
-            node_id,
-            node_pool.name,
-            node_pool.node_pool_id,
-            entry.cluster_name,
-        )
-        return NodeCycleResult(
-            entry=entry,
-            node_pool_id=node_pool.node_pool_id,
-            node_pool_name=node_pool.name,
-            node_id=node_id,
-            node_name=node_name,
-            status="DRY_RUN",
-            work_request_id=None,
-            skipped=True,
-        )
-
     ce_client = getattr(client, "container_engine_client", None)
     if ce_client is None:
         message = "OCI client does not expose container_engine_client"
@@ -267,23 +157,41 @@ def _cycle_node(
             entry=entry,
             node_pool_id=node_pool.node_pool_id,
             node_pool_name=node_pool.name,
-            node_id=node_id,
-            node_name=node_name,
             status="FAILED",
             work_request_id=None,
             error=message,
         )
 
-    eviction_settings = NodeEvictionSettings(
-        eviction_grace_duration=grace_period,
-        is_force_action_after_grace_duration=force_after_grace,
+    cycling_details = NodePoolCyclingDetails(
+        is_node_cycling_enabled=True,
+        cycle_modes=["BOOT_VOLUME_REPLACE"],
+        maximum_unavailable=maximum_unavailable,
+        maximum_surge=maximum_surge,
     )
-    details = ReplaceBootVolumeClusterNodeDetails(node_eviction_settings=eviction_settings)
+
+    if dry_run:
+        logger.info(
+            "[DRY RUN] Would enable boot-volume cycling for pool %s (%s) with maximum_unavailable=%s",
+            node_pool.name,
+            node_pool.node_pool_id,
+            maximum_unavailable,
+        )
+        return NodeCycleResult(
+            entry=entry,
+            node_pool_id=node_pool.node_pool_id,
+            node_pool_name=node_pool.name,
+            status="DRY_RUN",
+            work_request_id=None,
+            skipped=True,
+        )
+
+    update_details = UpdateNodePoolDetails(
+        kubernetes_version=target_version,
+        node_pool_cycling_details=cycling_details,
+    )
 
     logger.info(
-        "Replacing boot volume for node %s (%s) in pool %s (%s) within cluster %s (%s).",
-        node_name,
-        node_id,
+        "Triggering boot-volume replace cycle for node pool %s (%s) in cluster %s (%s)",
         node_pool.name,
         node_pool.node_pool_id,
         entry.cluster_name,
@@ -291,16 +199,11 @@ def _cycle_node(
     )
 
     try:
-        response = ce_client.replace_boot_volume_cluster_node(
-            entry.cluster_ocid,
-            node_id,
-            details,
-        )
+        response = ce_client.update_node_pool(node_pool.node_pool_id, update_details)
     except oci_exceptions.ServiceError as exc:
         logger.error(
-            "Failed to replace boot volume for node %s (%s) in pool %s: %s",
-            node_name,
-            node_id,
+            "Failed to initiate cycling for node pool %s (%s): %s",
+            node_pool.name,
             node_pool.node_pool_id,
             exc.message,
         )
@@ -308,20 +211,27 @@ def _cycle_node(
             entry=entry,
             node_pool_id=node_pool.node_pool_id,
             node_pool_name=node_pool.name,
-            node_id=node_id,
-            node_name=node_name,
             status="FAILED",
             work_request_id=None,
             error=exc.message,
         )
 
     work_request_id = response.headers.get("opc-work-request-id")
+    if work_request_id:
+        console.print(
+            f"[bold green]✓[/bold green] Cycle triggered for node pool [cyan]{node_pool.name}[/cyan] "
+            f"({node_pool.node_pool_id}). Work request: [magenta]{work_request_id}[/magenta]"
+        )
+    else:
+        console.print(
+            f"[bold green]✓[/bold green] Cycle request submitted for node pool [cyan]{node_pool.name}[/cyan] "
+            f"({node_pool.node_pool_id})."
+        )
+
     return NodeCycleResult(
         entry=entry,
         node_pool_id=node_pool.node_pool_id,
         node_pool_name=node_pool.name,
-        node_id=node_id,
-        node_name=node_name,
         status="IN_PROGRESS" if work_request_id else "UNKNOWN",
         work_request_id=work_request_id,
     )
@@ -352,8 +262,6 @@ def perform_node_cycles(
                         entry=entry,
                         node_pool_id="N/A",
                         node_pool_name="N/A",
-                        node_id="N/A",
-                        node_name="N/A",
                         status="FAILED",
                         work_request_id=None,
                         error=message,
@@ -376,8 +284,6 @@ def perform_node_cycles(
                     entry=entry,
                     node_pool_id="N/A",
                     node_pool_name="N/A",
-                    node_id="N/A",
-                    node_name="N/A",
                     status="FAILED",
                     work_request_id=None,
                     error=str(exc),
@@ -404,8 +310,6 @@ def perform_node_cycles(
                     entry=entry,
                     node_pool_id="N/A",
                     node_pool_name="N/A",
-                    node_id="N/A",
-                    node_name="N/A",
                     status="FAILED",
                     work_request_id=None,
                     error=str(exc),
@@ -426,8 +330,6 @@ def perform_node_cycles(
                         entry=entry,
                         node_pool_id=node_pool.node_pool_id,
                         node_pool_name=node_pool.name,
-                        node_id="N/A",
-                        node_name="N/A",
                         status="FAILED",
                         work_request_id=None,
                         error=str(exc),
@@ -435,51 +337,46 @@ def perform_node_cycles(
                 )
                 continue
 
-            pool_version = getattr(node_pool_details, "kubernetes_version", None)
-            desired_version = _ensure_node_pool_version(
-                client,
-                node_pool.node_pool_id,
-                pool_version,
-                cluster_info.kubernetes_version,
-            )
-
-            nodes = getattr(node_pool_details, "nodes", None) or []
+            existing_cycling = getattr(node_pool_details, "node_pool_cycling_details", None)
             maximum_unavailable = _extract_maximum_unavailable(node_pool_details)
+            maximum_surge = getattr(existing_cycling, "maximum_surge", None) if existing_cycling else None
+            if maximum_surge not in (None, ""):
+                try:
+                    maximum_surge = int(maximum_surge)
+                except (TypeError, ValueError):
+                    logger.debug(
+                        "Unable to parse maximum_surge=%r; keeping default (None)",
+                        maximum_surge,
+                    )
+                    maximum_surge = None
+            nodes = getattr(node_pool_details, "nodes", None) or []
+
             logger.info(
-                "Node pool %s (%s) maximum_unavailable=%s target_version=%s",
+                "Node pool %s (%s) maximum_unavailable=%s maximum_surge=%s node_count=%s",
                 node_pool.name,
                 node_pool.node_pool_id,
                 maximum_unavailable,
-                desired_version,
+                maximum_surge,
+                len(nodes),
             )
-            if not nodes:
-                console.print(
-                    f"[dim]Node pool [cyan]{node_pool.name}[/cyan] "
-                    f"({node_pool.node_pool_id}) has no worker nodes; skipping.[/dim]"
-                )
-                continue
 
-            for node in nodes:
-                node_version = getattr(node, "kubernetes_version", None)
-                if desired_version and _normalize_version(node_version) == _normalize_version(desired_version):
-                    logger.debug(
-                        "Skipping node %s (%s) because it already reports Kubernetes version %s",
-                        getattr(node, "name", node_version),
-                        getattr(node, "id", "unknown"),
-                        node_version,
-                    )
-                    continue
+            target_version = (
+                cluster_info.kubernetes_version
+                or getattr(node_pool_details, "kubernetes_version", None)
+            )
 
-                result = _cycle_node(
-                    entry,
-                    node_pool,
-                    node,
-                    client,
-                    grace_period=grace_period,
-                    force_after_grace=force_after_grace,
-                    dry_run=dry_run,
-                )
-                results.append(result)
+            result = _cycle_node_pool(
+                entry,
+                node_pool,
+                client,
+                grace_period=grace_period,
+                force_after_grace=force_after_grace,
+                dry_run=dry_run,
+                maximum_unavailable=maximum_unavailable,
+                maximum_surge=maximum_surge,
+                target_version=target_version,
+            )
+            results.append(result)
 
     return results
 

@@ -25,14 +25,14 @@ def sample_entry() -> ReportCluster:
 
 def _build_fake_client(nodes, maximum_unavailable="2"):
     fake_ce = SimpleNamespace()
-    fake_ce.calls = []
+    fake_ce.update_calls: List[tuple] = []
 
-    def replace_boot_volume(cluster_id, node_id, _details):
-        fake_ce.calls.append((cluster_id, node_id))
-        work_request_id = f"wr{len(fake_ce.calls)}"
+    def update_node_pool(node_pool_id, details):
+        fake_ce.update_calls.append((node_pool_id, details))
+        work_request_id = f"wr{len(fake_ce.update_calls)}"
         return SimpleNamespace(headers={"opc-work-request-id": work_request_id})
 
-    fake_ce.replace_boot_volume_cluster_node = replace_boot_volume
+    fake_ce.update_node_pool = update_node_pool
     fake_ce.get_node_pool = lambda node_pool_id: SimpleNamespace(
         data=SimpleNamespace(
             nodes=nodes,
@@ -40,13 +40,11 @@ def _build_fake_client(nodes, maximum_unavailable="2"):
             kubernetes_version="1.34.1",
         )
     )
-    fake_ce.update_node_pool = lambda node_pool_id, details: SimpleNamespace(headers={})
     return fake_ce
 
 
 def test_perform_node_cycles_triggers_replace_boot_volume(monkeypatch, sample_entry):
-    node = SimpleNamespace(id="ocid1.instance.oc1..node1", name="node-1", lifecycle_state="ACTIVE")
-    fake_ce = _build_fake_client([node])
+    fake_ce = _build_fake_client([SimpleNamespace(id="node1"), SimpleNamespace(id="node2")])
 
     fake_client = SimpleNamespace(
         container_engine_client=fake_ce,
@@ -72,9 +70,13 @@ def test_perform_node_cycles_triggers_replace_boot_volume(monkeypatch, sample_en
         dry_run=False,
     )
 
-    assert fake_ce.calls == [("ocid1.cluster.oc1..example", "ocid1.instance.oc1..node1")]
-    assert len(results) == 1
-    assert isinstance(results[0], NodeCycleResult)
+    assert len(fake_ce.update_calls) == 1
+    pool_id, details = fake_ce.update_calls[0]
+    assert pool_id == "ocid1.nodepool.oc1..np1"
+    cycling = details.node_pool_cycling_details
+    assert cycling.is_node_cycling_enabled is True
+    assert cycling.cycle_modes == ["BOOT_VOLUME_REPLACE"]
+    assert cycling.maximum_unavailable == 2
     assert results[0].work_request_id == "wr1"
     assert results[0].status in {"IN_PROGRESS", "UNKNOWN"}
 
@@ -107,7 +109,7 @@ def test_perform_node_cycles_dry_run(monkeypatch, sample_entry):
         dry_run=True,
     )
 
-    assert fake_ce.calls == []
+    assert fake_ce.update_calls == []
     assert len(results) == 1
     assert results[0].skipped is True
     assert results[0].status == "DRY_RUN"
@@ -145,8 +147,10 @@ def test_perform_node_cycles_respects_maximum_unavailable(monkeypatch, sample_en
         dry_run=False,
     )
 
-    assert len(fake_ce.calls) == 4
-    assert [call[1] for call in fake_ce.calls] == [node.id for node in nodes]
+    assert len(fake_ce.update_calls) == 1
+    pool_id, details = fake_ce.update_calls[0]
+    assert pool_id == "ocid1.nodepool.oc1..np-max"
+    assert details.node_pool_cycling_details.maximum_unavailable == 2
 def test_diagnose_report_flags_short_rows(tmp_path):
     html = """<!DOCTYPE html>
 <html><body>
