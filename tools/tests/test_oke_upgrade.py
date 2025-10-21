@@ -3,6 +3,7 @@ from typing import List, Tuple
 
 import pytest
 
+from oci_client.models import OKEClusterInfo
 from oke_upgrade import (
     ReportCluster,
     choose_target_version,
@@ -125,6 +126,17 @@ def test_perform_cluster_upgrades_triggers_upgrade(monkeypatch: pytest.MonkeyPat
         def __init__(self) -> None:
             self.calls: List[Tuple[str, str]] = []
 
+        def get_oke_cluster(self, cluster_id: str) -> OKEClusterInfo:
+            assert cluster_id == entry.cluster_ocid
+            return OKEClusterInfo(
+                cluster_id=cluster_id,
+                name="cluster-a",
+                kubernetes_version="1.32.1",
+                lifecycle_state="ACTIVE",
+                compartment_id=entry.compartment_ocid,
+                available_upgrades=["v1.34.1"],
+            )
+
         def upgrade_oke_cluster(self, cluster_id: str, target_version: str) -> str:
             self.calls.append((cluster_id, target_version))
             return "work-request-123"
@@ -142,7 +154,7 @@ def test_perform_cluster_upgrades_triggers_upgrade(monkeypatch: pytest.MonkeyPat
     )
 
     assert requested_profile["key"] == ("remote-observer", "dev", "us-phoenix-1")
-    assert fake_client.calls == [("ocid1.cluster.oc1..clusterA", "1.34.1")]
+    assert fake_client.calls == [("ocid1.cluster.oc1..clusterA", "v1.34.1")]
     assert len(results) == 1
     assert results[0].success is True
     assert results[0].work_request_id == "work-request-123"

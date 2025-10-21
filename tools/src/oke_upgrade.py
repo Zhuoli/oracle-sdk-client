@@ -303,6 +303,52 @@ def perform_cluster_upgrades(
             clients[cache_key] = client
 
         try:
+            cluster_details = client.get_oke_cluster(entry.cluster_ocid)  # type: ignore[attr-defined]
+        except Exception as exc:  # pragma: no cover - defensive handling
+            error_message = (
+                f"Failed to fetch cluster details for {entry.cluster_name} "
+                f"({entry.cluster_ocid}) in {entry.region}: {exc}"
+            )
+            logger.error(error_message)
+            results.append(
+                UpgradeResult(
+                    entry=entry,
+                    target_version=target_version,
+                    work_request_id=None,
+                    success=False,
+                    error=str(exc),
+                )
+            )
+            continue
+
+        api_target_version = choose_target_version(
+            cluster_details.available_upgrades,
+            requested_version or target_version,
+        )
+
+        if not api_target_version:
+            available_text = ", ".join(cluster_details.available_upgrades) or "None"
+            requested_text = requested_version or target_version
+            message = (
+                f"OCI reports no matching upgrade for cluster {entry.cluster_name} "
+                f"({entry.cluster_ocid}) in {entry.region}. "
+                f"Available (fresh): {available_text}. Requested: {requested_text or 'latest'}."
+            )
+            display_warning(message)
+            results.append(
+                UpgradeResult(
+                    entry=entry,
+                    target_version=None,
+                    work_request_id=None,
+                    success=False,
+                    error=message,
+                )
+            )
+            continue
+
+        target_version = api_target_version
+
+        try:
             work_request_id = client.upgrade_oke_cluster(entry.cluster_ocid, target_version)  # type: ignore[attr-defined]
             console.print(
                 f"[bold green]✓[/bold green] Upgrade triggered for [cyan]{entry.cluster_name}[/cyan] "
