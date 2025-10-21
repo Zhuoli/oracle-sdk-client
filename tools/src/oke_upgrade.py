@@ -227,6 +227,7 @@ class UpgradeResult:
     target_version: Optional[str]
     work_request_id: Optional[str]
     success: bool
+    skipped: bool = False
     error: Optional[str] = None
 
 
@@ -277,7 +278,12 @@ def perform_cluster_upgrades(
                     f"({entry.cluster_ocid}) in [cyan]{entry.region}[/cyan] to [green]{report_target_version}[/green]."
                 )
                 results.append(
-                    UpgradeResult(entry=entry, target_version=report_target_version, work_request_id=None, success=True)
+                    UpgradeResult(
+                        entry=entry,
+                        target_version=report_target_version,
+                        work_request_id=None,
+                        success=True,
+                    )
                 )
             else:
                 console.print(
@@ -285,7 +291,13 @@ def perform_cluster_upgrades(
                     f"({entry.cluster_ocid}) in [cyan]{entry.region}[/cyan] has no reported upgrades."
                 )
                 results.append(
-                    UpgradeResult(entry=entry, target_version=None, work_request_id=None, success=False)
+                    UpgradeResult(
+                        entry=entry,
+                        target_version=None,
+                        work_request_id=None,
+                        success=True,
+                        skipped=True,
+                    )
                 )
             continue
 
@@ -306,6 +318,7 @@ def perform_cluster_upgrades(
                         target_version=report_target_version,
                         work_request_id=None,
                         success=False,
+                        skipped=False,
                         error=error_message,
                     )
                 )
@@ -326,6 +339,7 @@ def perform_cluster_upgrades(
                     target_version=report_target_version,
                     work_request_id=None,
                     success=False,
+                     skipped=False,
                     error=str(exc),
                 )
             )
@@ -379,7 +393,8 @@ def perform_cluster_upgrades(
                     entry=entry,
                     target_version=None,
                     work_request_id=None,
-                    success=False,
+                    success=True,
+                    skipped=True,
                     error=message,
                 )
             )
@@ -400,6 +415,7 @@ def perform_cluster_upgrades(
                     target_version=target_version,
                     work_request_id=work_request_id or None,
                     success=True,
+                    skipped=False,
                 )
             )
         except Exception as exc:  # pragma: no cover - defensive handling
@@ -414,6 +430,7 @@ def perform_cluster_upgrades(
                     target_version=target_version,
                     work_request_id=None,
                     success=False,
+                    skipped=False,
                     error=str(exc),
                 )
             )
@@ -516,24 +533,29 @@ def main() -> int:
         filters=filters,
     )
 
-    successes = sum(1 for result in results if result.success and not args.dry_run)
-    dry_runs = sum(1 for result in results if result.success and args.dry_run)
+    initiated = sum(
+        1 for result in results if result.success and not result.skipped and not args.dry_run
+    )
+    planned = sum(
+        1 for result in results if result.success and not result.skipped and args.dry_run
+    )
     failures = sum(1 for result in results if not result.success)
     processed = len(results)
     total_entries = len(entries)
+    skipped = sum(1 for result in results if result.skipped)
 
     console.print(
         f"[cyan]Processed {processed} of {total_entries} cluster entr{'y' if total_entries == 1 else 'ies'} from the report.[/cyan]"
     )
     if args.dry_run:
         console.print(
-            f"[bold blue]Summary:[/bold blue] planned {dry_runs} upgrade(s); "
-            f"{failures} cluster(s) skipped."
+            f"[bold blue]Summary:[/bold blue] planned {planned} upgrade(s); "
+            f"{skipped} cluster(s) skipped."
         )
     else:
         console.print(
-            f"[bold blue]Summary:[/bold blue] initiated {successes} upgrade(s); "
-            f"{failures} failure(s)."
+            f"[bold blue]Summary:[/bold blue] initiated {initiated} upgrade(s); "
+            f"{skipped} cluster(s) skipped; {failures} failure(s)."
         )
 
     return 0 if failures == 0 else 2
