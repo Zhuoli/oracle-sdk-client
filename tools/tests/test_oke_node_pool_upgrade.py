@@ -1,4 +1,6 @@
-from typing import List
+from typing import Any, List
+
+from types import SimpleNamespace
 
 import pytest
 
@@ -197,3 +199,60 @@ def test_perform_node_pool_upgrades_executes(monkeypatch: pytest.MonkeyPatch) ->
     assert len(results) == 1
     assert results[0].success is True
     assert results[0].work_request_id == "wr-123"
+
+
+def test_perform_node_pool_upgrades_handles_missing_get_cluster(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = _sample_entry()
+    cluster_info = OKEClusterInfo(
+        cluster_id=entry.cluster_ocid,
+        name=entry.cluster_name,
+        kubernetes_version="1.34.1",
+        lifecycle_state="ACTIVE",
+        compartment_id=entry.compartment_ocid,
+        available_upgrades=[],
+    )
+    node_pool = OKENodePoolInfo(
+        node_pool_id="ocid1.nodepool.oc1..np1",
+        name="pool-a",
+        kubernetes_version="1.32.1",
+        lifecycle_state="ACTIVE",
+    )
+
+    class FakeCEClient:
+        def get_cluster(self, cluster_id: str) -> Any:
+            return SimpleNamespace(data=cluster_info)
+
+        def list_node_pools(self, cluster_id: str, compartment_id: str) -> Any:
+            return SimpleNamespace(data=[SimpleNamespace(
+                id=node_pool.node_pool_id,
+                name=node_pool.name,
+                kubernetes_version=node_pool.kubernetes_version,
+                lifecycle_state=node_pool.lifecycle_state,
+            )])
+
+        def update_node_pool(self, node_pool_id: str, update_details: Any) -> Any:
+            return SimpleNamespace(headers={"opc-work-request-id": "wr-456"})
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.container_engine_client = FakeCEClient()
+
+    monkeypatch.setattr(
+        "oke_node_pool_upgrade.setup_session_token",
+        lambda *args, **kwargs: "profile-name",
+    )
+    monkeypatch.setattr(
+        "oke_node_pool_upgrade.create_oci_client",
+        lambda region, profile: FakeClient(),
+    )
+
+    results = perform_node_pool_upgrades(
+        [entry],
+        requested_version=None,
+        filters={},
+        dry_run=False,
+    )
+
+    assert len(results) == 1
+    assert results[0].success is True
+    assert results[0].work_request_id == "wr-456"

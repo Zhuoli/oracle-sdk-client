@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from rich.console import Console
 from rich.logging import RichHandler
 
+from oci.container_engine.models import UpdateNodePoolDetails
+
 from oci_client.models import OKENodePoolInfo, OKEClusterInfo
 from oci_client.utils.display import display_warning
 from oci_client.utils.session import create_oci_client, setup_session_token
@@ -160,7 +162,7 @@ def perform_node_pool_upgrades(
             clients[cache_key] = client
 
         try:
-            cluster_info = client.get_oke_cluster(entry.cluster_ocid)
+            cluster_info = _resolve_cluster_details(client, entry.cluster_ocid)
         except Exception as exc:  # pragma: no cover - defensive guard
             message = (
                 f"Failed to fetch cluster details for {entry.cluster_name} "
@@ -197,7 +199,7 @@ def perform_node_pool_upgrades(
             continue
 
         try:
-            node_pools = client.list_node_pools(entry.cluster_ocid, entry.compartment_ocid)
+            node_pools = _list_node_pools(client, entry.cluster_ocid, entry.compartment_ocid)
         except Exception as exc:  # pragma: no cover - defensive guard
             message = (
                 f"Failed to list node pools for cluster {entry.cluster_name} "
@@ -295,9 +297,7 @@ def perform_node_pool_upgrades(
                 continue
 
             try:
-                work_request_id = client.upgrade_oke_node_pool(
-                    node_pool.node_pool_id, target_version
-                )
+                work_request_id = _upgrade_node_pool(client, node_pool.node_pool_id, target_version)
                 console.print(
                     f"[bold green]✓[/bold green] Upgrade triggered for node pool [cyan]{node_pool.name}[/cyan] "
                     f"({node_pool.node_pool_id}) to [green]{target_version}[/green]. "
@@ -428,3 +428,85 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry
     except KeyboardInterrupt:
         console.print("\n[yellow]Node pool upgrade process interrupted by user.[/yellow]")
         raise SystemExit(1)
+
+
+def _resolve_cluster_details(client: Any, cluster_id: str) -> OKEClusterInfo:
+    """
+    Retrieve cluster details either via the dedicated helper or by directly querying
+    the Container Engine client (maintains compatibility with older client versions).
+    """
+    if hasattr(client, "get_oke_cluster"):
+        return client.get_oke_cluster(cluster_id)  # type: ignore[attr-defined]
+
+    ce_client = getattr(client, "container_engine_client", None)
+    if ce_client is None:
+        raise AttributeError("OCI client does not expose container_engine_client")
+
+    cluster = ce_client.get_cluster(cluster_id).data
+    available_upgrades_attr = getattr(cluster, "available_kubernetes_upgrades", None)
+    if available_upgrades_attr is None:
+        available_upgrades_attr = getattr(cluster, "available_upgrades", None)
+    available_upgrades = list(available_upgrades_attr or [])
+
+    return OKEClusterInfo(
+        cluster_id=cluster_id,
+        name=getattr(cluster, "name", cluster_id),
+        kubernetes_version=getattr(cluster, "kubernetes_version", None),
+        lifecycle_state=getattr(cluster, "lifecycle_state", None),
+        compartment_id=getattr(cluster, "compartment_id", None),
+        available_upgrades=available_upgrades,
+    )
+
+
+def _list_node_pools(
+    client: Any,
+    cluster_id: str,
+    compartment_id: Optional[str],
+) -> List[OKENodePoolInfo]:
+    """
+    Retrieve node pools either via client helper or directly from the Container Engine API.
+    """
+    if hasattr(client, "list_node_pools"):
+        return client.list_node_pools(cluster_id, compartment_id)
+
+    ce_client = getattr(client, "container_engine_client", None)
+    if ce_client is None:
+        raise AttributeError("OCI client does not expose container_engine_client")
+
+    request_kwargs: Dict[str, Any] = {"cluster_id": cluster_id}
+    if compartment_id:
+        request_kwargs["compartment_id"] = compartment_id
+
+    response = ce_client.list_node_pools(**request_kwargs)
+    data = getattr(response, "data", []) or []
+
+    node_pools: List[OKENodePoolInfo] = []
+    for pool in data:
+        node_pool_id = getattr(pool, "id", None)
+        if not node_pool_id:
+            continue
+        node_pools.append(
+            OKENodePoolInfo(
+                node_pool_id=node_pool_id,
+                name=getattr(pool, "name", node_pool_id),
+                kubernetes_version=getattr(pool, "kubernetes_version", None),
+                lifecycle_state=getattr(pool, "lifecycle_state", None),
+            )
+        )
+    return node_pools
+
+
+def _upgrade_node_pool(client: Any, node_pool_id: str, target_version: str) -> str:
+    """
+    Initiate the node pool upgrade via client helper or container engine API directly.
+    """
+    if hasattr(client, "upgrade_oke_node_pool"):
+        return client.upgrade_oke_node_pool(node_pool_id, target_version)
+
+    ce_client = getattr(client, "container_engine_client", None)
+    if ce_client is None:
+        raise AttributeError("OCI client does not expose container_engine_client")
+
+    update_details = UpdateNodePoolDetails(kubernetes_version=target_version)
+    response = ce_client.update_node_pool(node_pool_id, update_details)
+    return response.headers.get("opc-work-request-id", "")
