@@ -326,13 +326,42 @@ def perform_cluster_upgrades(
             )
             continue
 
-        api_target_version = choose_target_version(
-            cluster_details.available_upgrades,
-            requested_version or report_target_version,
-        )
+        api_available = cluster_details.available_upgrades
+        api_normalized = [_extract_version(value) for value in api_available]
+
+        fallback_message: Optional[str] = None
+
+        api_target_version: Optional[str] = None
+
+        if normalized_request:
+            if normalized_request in api_normalized:
+                api_target_version = api_available[api_normalized.index(normalized_request)]
+            elif api_available:
+                api_target_version = max(api_available, key=_version_key)
+                fallback_message = (
+                    f"Requested target version {requested_version} not available for cluster "
+                    f"{entry.cluster_name} ({entry.cluster_ocid}). Falling back to {api_target_version}."
+                )
+        elif report_target_version:
+            normalized_report = _extract_version(report_target_version)
+            if normalized_report and normalized_report in api_normalized:
+                api_target_version = api_available[api_normalized.index(normalized_report)]
+            elif api_available:
+                api_target_version = max(api_available, key=_version_key)
+                fallback_message = (
+                    f"Report suggested version {report_target_version} for cluster "
+                    f"{entry.cluster_name} ({entry.cluster_ocid}), but OCI now offers "
+                    f"{', '.join(api_available)}. Using {api_target_version} instead."
+                )
+        else:
+            if api_available:
+                api_target_version = max(api_available, key=_version_key)
+
+        if fallback_message:
+            console.print(f"[yellow]{fallback_message}[/yellow]")
 
         if not api_target_version:
-            available_text = ", ".join(cluster_details.available_upgrades) or "None"
+            available_text = ", ".join(api_available) or "None"
             requested_text = requested_version or report_target_version
             message = (
                 f"OCI reports no matching upgrade for cluster {entry.cluster_name} "

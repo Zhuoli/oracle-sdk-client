@@ -210,3 +210,51 @@ def test_perform_cluster_upgrades_uses_container_engine_fallback(monkeypatch: py
     assert len(results) == 1
     assert results[0].success is True
     assert results[0].work_request_id == "work-request-234"
+
+
+def test_perform_cluster_upgrades_falls_back_to_latest(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = ReportCluster(
+        project="remote-observer",
+        stage="dev",
+        region="us-phoenix-1",
+        cluster_name="cluster-a",
+        cluster_version="1.32.1",
+        available_upgrades=["1.33.1"],
+        compartment_ocid="ocid1.compartment.oc1..example",
+        cluster_ocid="ocid1.cluster.oc1..clusterA",
+    )
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: List[Tuple[str, str]] = []
+
+        def get_oke_cluster(self, cluster_id: str) -> OKEClusterInfo:
+            return OKEClusterInfo(
+                cluster_id=cluster_id,
+                name="cluster-a",
+                kubernetes_version="1.32.1",
+                lifecycle_state="ACTIVE",
+                compartment_id=entry.compartment_ocid,
+                available_upgrades=["v1.34.0", "v1.34.1"],
+            )
+
+        def upgrade_oke_cluster(self, cluster_id: str, target_version: str) -> str:
+            self.calls.append((cluster_id, target_version))
+            return "work-request-345"
+
+    fake_client = FakeClient()
+
+    monkeypatch.setattr("oke_upgrade.setup_session_token", lambda *args, **kwargs: "profile-name")  # type: ignore
+    monkeypatch.setattr("oke_upgrade.create_oci_client", lambda region, profile: fake_client)  # type: ignore
+
+    results = perform_cluster_upgrades(
+        [entry],
+        requested_version="1.33.1",
+        dry_run=False,
+        filters={},
+    )
+
+    assert fake_client.calls == [("ocid1.cluster.oc1..clusterA", "v1.34.1")]
+    assert len(results) == 1
+    assert results[0].success is True
+    assert results[0].target_version == "v1.34.1"
