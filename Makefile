@@ -303,7 +303,7 @@ oke-node-pool-bump:
 	if [ "$(VERBOSE)" = "1" ] || [ "$(VERBOSE)" = "true" ] || [ "$(VERBOSE)" = "TRUE" ] || [ "$(VERBOSE)" = "yes" ] || [ "$(VERBOSE)" = "YES" ]; then \
 		VERBOSE_FLAG="--verbose"; \
 	fi; \
-	cd tools && poetry run python src/recycle_node_pools.py --csv-path "../$(CSV)" $$POLL_FLAG $$CONFIG_FLAG $$META_FLAG $$DRY_RUN_FLAG $$VERBOSE_FLAG
+	cd tools && poetry run python src/node_cycle_pools.py --csv-path "../$(CSV)" $$POLL_FLAG $$CONFIG_FLAG $$META_FLAG $$DRY_RUN_FLAG $$VERBOSE_FLAG
 
 # OKE node cycling (replace boot volumes)
 oke-node-cycle:
