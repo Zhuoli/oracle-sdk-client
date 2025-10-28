@@ -75,6 +75,7 @@ ACTIVE_INSTANCE_STATES = {
 @dataclass
 class CsvInstruction:
     host_name: str
+    region: str
     compartment_id: str
     current_image: str
     new_image_name: str
@@ -225,7 +226,10 @@ class NodePoolImageUpdater:
         self._used_contexts: Set[Tuple[str, str, str]] = set()
 
         self._configure_logging()
-        self._compartment_lookup: Dict[str, CompartmentContext] = self._load_compartment_lookup()
+        (
+            self._compartment_lookup_by_region,
+            self._compartment_lookup_by_compartment,
+        ) = self._load_compartment_lookup()
         self._total_rows: int = 0
         self._resolved_rows: int = 0
         self._missing_hosts: List[Tuple[str, str, str]] = []
@@ -275,19 +279,23 @@ class NodePoolImageUpdater:
         """Build a unique cache key for the given project/stage/region context."""
         return (context.project, context.stage, context.region)
 
-    def _load_compartment_lookup(self) -> Dict[str, CompartmentContext]:
+    def _load_compartment_lookup(
+        self,
+    ) -> Tuple[Dict[Tuple[str, str], CompartmentContext], Dict[str, List[CompartmentContext]]]:
         """Parse meta.yaml and map compartment OCIDs to project/stage/region tuples."""
-        lookup: Dict[str, CompartmentContext] = {}
+        by_region: Dict[Tuple[str, str], CompartmentContext] = {}
+        by_compartment: Dict[str, List[CompartmentContext]] = {}
+
         if not self.meta_file.exists():
             self.logger.error("Meta file not found: %s", self.meta_file)
-            return lookup
+            return by_region, by_compartment
 
         try:
             with self.meta_file.open("r", encoding="utf-8") as handle:
                 data = yaml.safe_load(handle) or {}
         except Exception as exc:
             self.logger.error("Failed to parse meta file %s: %s", self.meta_file, exc)
-            return lookup
+            return by_region, by_compartment
 
         projects = data.get("projects", {}) if isinstance(data, dict) else {}
         for project_name, stages in projects.items():
@@ -305,18 +313,21 @@ class NodePoolImageUpdater:
                         compartment_id = details.get("compartment_id")
                         if not compartment_id:
                             continue
-                        lookup[compartment_id] = CompartmentContext(
+
+                        context = CompartmentContext(
                             project=project_name,
                             stage=stage_name,
                             region=region_name,
                         )
+                        by_region[(region_name, compartment_id)] = context
+                        by_compartment.setdefault(compartment_id, []).append(context)
 
         self.logger.info(
             "Loaded %d compartment mapping(s) from %s",
-            len(lookup),
+            len(by_region),
             self.meta_file,
         )
-        return lookup
+        return by_region, by_compartment
 
     def _configure_logging(self) -> None:
         """Initialize stream & file logging for this run."""
@@ -432,6 +443,7 @@ class NodePoolImageUpdater:
             column_map = self._build_column_map(reader.fieldnames)
             missing = {
                 "compute instance host name",
+                "region",
                 "compartment id",
                 "current image",
                 "new image name",
@@ -446,6 +458,7 @@ class NodePoolImageUpdater:
                 if not raw_row:
                     continue
                 host = (raw_row.get(column_map["compute instance host name"], "") or "").strip()
+                region = (raw_row.get(column_map["region"], "") or "").strip()
                 compartment = (raw_row.get(column_map["compartment id"], "") or "").strip()
                 current_image = (raw_row.get(column_map["current image"], "") or "").strip()
                 new_image = (raw_row.get(column_map["new image name"], "") or "").strip()
@@ -462,8 +475,9 @@ class NodePoolImageUpdater:
 
                 if not (host and compartment):
                     self.logger.warning(
-                        "Skipping row with missing required data: host=%r compartment=%r new_image=%r",
+                        "Skipping row with missing required data: host=%r region=%r compartment=%r new_image=%r",
                         host,
+                        region,
                         compartment,
                         new_image,
                     )
@@ -472,6 +486,7 @@ class NodePoolImageUpdater:
                 rows.append(
                     CsvInstruction(
                         host_name=host,
+                        region=region,
                         compartment_id=compartment,
                         current_image=current_image,
                         new_image_name=new_image,
@@ -492,6 +507,7 @@ class NodePoolImageUpdater:
         normalized = {self._normalize_header(name): name for name in headers}
         expected = {
             "host name": "compute instance host name",
+            "region": "region",
             "compartment id": "compartment id",
             "current image": "current image",
             "newer available image": "new image name",
@@ -505,6 +521,7 @@ class NodePoolImageUpdater:
 
         missing = {
             "compute instance host name",
+            "region",
             "compartment id",
             "current image",
             "new image name",
@@ -530,7 +547,31 @@ class NodePoolImageUpdater:
         instance_pool_plans: Dict[Tuple[str, str, str, str], InstancePoolUpdateAction] = {}
 
         for instruction in instructions:
-            context = self._compartment_lookup.get(instruction.compartment_id)
+            context: Optional[CompartmentContext] = None
+            if instruction.region:
+                context = self._compartment_lookup_by_region.get(
+                    (instruction.region, instruction.compartment_id)
+                )
+            if not context:
+                contexts = self._compartment_lookup_by_compartment.get(instruction.compartment_id, [])
+                if len(contexts) == 1:
+                    context = contexts[0]
+                elif contexts:
+                    context = contexts[0]
+                    self.logger.warning(
+                        "Multiple contexts found for compartment %s; using %s/%s (CSV region=%s)",
+                        instruction.compartment_id,
+                        context.project,
+                        context.region,
+                        instruction.region or "<unspecified>",
+                    )
+            if context and instruction.region and instruction.region != context.region:
+                context = CompartmentContext(
+                    project=context.project,
+                    stage=context.stage,
+                    region=instruction.region,
+                )
+
             if not context:
                 self._errors.append(
                     "Compartment {compartment} not found in meta configuration".format(

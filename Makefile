@@ -277,13 +277,16 @@ image-updates:
 
 # OKE node pool image bump
 oke-node-pool-bump:
-	@if [ -z "$(CSV)" ]; then \
-		echo "❌ Error: CSV=<file> is required"; \
-		echo "Usage: make oke-node-pool-bump CSV=oke_nodes.csv [DRY_RUN=true] [META=tools/meta.yaml] [CONFIG=~/.oci/config] [VERBOSE=true]"; \
-		exit 1; \
-	fi
-	@echo "⬆️  Bumping OKE node pool images from $(CSV)"
-	@DRY_RUN_FLAG=""; \
+	@CSV_INPUT="$(CSV)"; \
+	if [ -z "$$CSV_INPUT" ]; then \
+		CSV_INPUT="oci_image_updates_report.csv"; \
+	fi; \
+	case "$$CSV_INPUT" in \
+		/*) CSV_ARG="$$CSV_INPUT";; \
+		*) CSV_ARG="../$$CSV_INPUT";; \
+	esac; \
+	printf "⬆️  Bumping OKE node pool images from %s\n" "$$CSV_INPUT"; \
+	DRY_RUN_FLAG=""; \
 	if [ "$(DRY_RUN)" = "1" ] || [ "$(DRY_RUN)" = "true" ] || [ "$(DRY_RUN)" = "TRUE" ] || [ "$(DRY_RUN)" = "yes" ] || [ "$(DRY_RUN)" = "YES" ]; then \
 		DRY_RUN_FLAG="--dry-run"; \
 	fi; \
@@ -303,7 +306,7 @@ oke-node-pool-bump:
 	if [ "$(VERBOSE)" = "1" ] || [ "$(VERBOSE)" = "true" ] || [ "$(VERBOSE)" = "TRUE" ] || [ "$(VERBOSE)" = "yes" ] || [ "$(VERBOSE)" = "YES" ]; then \
 		VERBOSE_FLAG="--verbose"; \
 	fi; \
-	cd tools && poetry run python src/node_cycle_pools.py --csv-path "../$(CSV)" $$POLL_FLAG $$CONFIG_FLAG $$META_FLAG $$DRY_RUN_FLAG $$VERBOSE_FLAG
+	cd tools && poetry run python src/node_cycle_pools.py --csv-path "$$CSV_ARG" $$POLL_FLAG $$CONFIG_FLAG $$META_FLAG $$DRY_RUN_FLAG $$VERBOSE_FLAG
 
 # OKE node cycling (replace boot volumes)
 oke-node-cycle:

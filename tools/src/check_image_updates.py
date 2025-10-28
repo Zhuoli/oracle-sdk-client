@@ -249,7 +249,7 @@ def _find_latest_image_with_same_type(
 
 def _collect_instances_with_images(
     project: str, stage: str, region: str, compartment_id: str
-) -> List[Tuple[str, str, str, str]]:
+) -> List[Tuple[str, str, str, str, str]]:
     """
     For a given region and compartment, return a list of tuples:
       (hostname, compartment_id, current_image_name, newer_image_name or '—')
@@ -281,7 +281,7 @@ def _collect_instances_with_images(
     if not instances:
         console.print(f"[yellow]No RUNNING instances found in region {region}, compartment {compartment_id}[/yellow]")
 
-    results: List[Tuple[str, str, str, str]] = []
+    results: List[Tuple[str, str, str, str, str]] = []
 
     for inst in instances:
         hostname = _get_primary_hostname_for_instance(compute_client, network_client, inst)
@@ -347,7 +347,7 @@ def _collect_instances_with_images(
                             f"[green]Instance '{instance_name}' ({hostname}): newer image available -> '{newer_image_name}' (current '{current_image_name}')[/green]"
                         )
 
-        results.append((hostname, inst.compartment_id, current_image_name, newer_image_name))
+        results.append((hostname, region, inst.compartment_id, current_image_name, newer_image_name))
 
     return results
 
@@ -380,7 +380,7 @@ def main(argv: List[str]) -> int:
         console.print(table)
         return 0
 
-    all_rows: List[Tuple[str, str, str, str]] = []
+    all_rows: List[Tuple[str, str, str, str, str]] = []
     for region, compartment_id in region_compartment_list:
         console.print(f"[cyan]Processing region {region} (compartment {compartment_id})...[/cyan]")
         rows = _collect_instances_with_images(project, stage, region, compartment_id)
@@ -389,12 +389,13 @@ def main(argv: List[str]) -> int:
     # Always print table with ALL instances discovered
     table = Table(title=f"Image Updates for Project '{project}' Stage '{stage}'")
     table.add_column("Host name", style="bold")
+    table.add_column("Region")
     table.add_column("Compartment ID")
     table.add_column("Current Image")
     table.add_column("Newer Available Image")
 
-    for hostname, comp_id, current_img, newer_img in all_rows:
-        table.add_row(hostname, comp_id, current_img, newer_img)
+    for hostname, region, comp_id, current_img, newer_img in all_rows:
+        table.add_row(hostname, region, comp_id, current_img, newer_img)
 
     console.print(table)
 
@@ -403,15 +404,15 @@ def main(argv: List[str]) -> int:
     try:
         with open(csv_filename, "w", newline='', encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(["Host name", "Compartment ID", "Current Image", "Newer Available Image"])
-            for hostname, comp_id, current_img, newer_img in all_rows:
-                writer.writerow([hostname, comp_id, current_img, newer_img])
+            writer.writerow(["Host name", "Region", "Compartment ID", "Current Image", "Newer Available Image"])
+            for hostname, region, comp_id, current_img, newer_img in all_rows:
+                writer.writerow([hostname, region, comp_id, current_img, newer_img])
         console.print(f"[green]CSV report saved to {csv_filename}[/green]")
     except Exception as e:
         console.print(f"[red]Failed to write CSV report: {e}[/red]")
     
     # Optional summary
-    newer_count = sum(1 for _, _, _, newer in all_rows if newer and newer != MISSING)
+    newer_count = sum(1 for _, _, _, _, newer in all_rows if newer and newer != MISSING)
     total_instances = len(all_rows)
     console.print(f"[dim]Summary: {newer_count} of {total_instances} running instances have a newer image available.[/dim]")
 

@@ -15,8 +15,8 @@ def _mock_browser(monkeypatch):
 
 def _write_csv(path: Path) -> None:
     path.write_text(
-        "Host name,Compartment ID,Current Image,Newer Available Image\n"
-        "host-a,ocid1.compartment.oc1..example,OL-2024-09,—\n",
+        "Host name,Region,Compartment ID,Current Image,Newer Available Image\n"
+        "host-a,us-phoenix-1,ocid1.compartment.oc1..example,OL-2024-09,—\n",
         encoding="utf-8",
     )
 
