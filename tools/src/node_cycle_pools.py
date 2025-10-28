@@ -1163,7 +1163,7 @@ class NodePoolImageUpdater:
 
     @classmethod
     def _build_update_node_pool_details(
-        cls, image_id: str, max_surge: str = "4", max_unavailable: str = "0"
+        cls, image_id: str, max_surge: str = "4", max_unavailable: str = "2"
     ) -> Any:
         """Build node pool update details with image and node cycling configuration.
 
@@ -1181,15 +1181,15 @@ class NodePoolImageUpdater:
         try:
             cycling_details = NodePoolCyclingDetails(
                 is_node_cycling_enabled=True,
-                maximum_surge=max_surge,
-                maximum_unavailable=max_unavailable,
+                maximum_surge=str(max_surge) if max_surge is not None else None,
+                maximum_unavailable=str(max_unavailable) if max_unavailable is not None else None,
             )
         except (TypeError, AttributeError):
             # Fallback for older SDK versions
             cycling_details = {
                 "isNodeCyclingEnabled": True,
-                "maximumSurge": max_surge,
-                "maximumUnavailable": max_unavailable,
+                "maximumSurge": str(max_surge) if max_surge is not None else None,
+                "maximumUnavailable": str(max_unavailable) if max_unavailable is not None else None,
             }
 
         # Add node eviction settings for graceful draining
@@ -1197,13 +1197,13 @@ class NodePoolImageUpdater:
         try:
             eviction_settings = NodeEvictionNodePoolSettings(
                 eviction_grace_duration="PT30M",  # 30 minutes grace period for workload migration
-                is_force_delete_after_grace_duration=False,
+                is_force_delete_after_grace_duration=True,
             )
         except (TypeError, AttributeError):
             # Fallback for older SDK versions
             eviction_settings = {
                 "evictionGraceDuration": "PT30M",
-                "isForceDeleteAfterGraceDuration": False,
+                "isForceDeleteAfterGraceDuration": True,
             }
 
         # Build the complete update details
@@ -2194,39 +2194,28 @@ class NodePoolImageUpdater:
                 errors=[exc.message],
             )
 
-        self.console.print("[bold green]✓ API call succeeded[/bold green]\n")
+        self.console.print("[bold green]✓ API call submitted[/bold green]\n")
 
         work_request_id = response.headers.get("opc-work-request-id")
         if work_request_id:
-            result = self._wait_for_work_request(
-                context, work_request_id, f"Update node pool {node_pool_id}"
+            self.logger.info(
+                "Node pool %s update in %s queued with work request %s",
+                node_pool_id,
+                context.region,
+                work_request_id,
             )
-
-            # Print work request result in a colored table
-            self._print_work_request_table(
+            return WorkRequestResult(
+                description=f"Update node pool {node_pool_id}",
+                status="IN_PROGRESS",
                 work_request_id=work_request_id,
-                status=result.status,
-                description=result.description,
-                accepted_time=result.accepted_time,
-                finished_time=result.finished_time,
-                duration_seconds=result.duration_seconds,
-                errors=result.errors if result.errors else None,
             )
-            self.console.print("\n")
-
-            if result.status != "SUCCEEDED":
-                self._errors.append(
-                    f"Node pool update for {node_pool_id} ended with status {result.status}"
-                )
-            return result
 
         message = f"Update node pool {node_pool_id} did not return a work request ID"
         self.logger.warning(message)
-        self._errors.append(message)
         self.console.print(f"[bold yellow]⚠ {message}[/bold yellow]\n")
         return WorkRequestResult(
             description=f"Update node pool {node_pool_id}",
-            status="UNKNOWN",
+            status="SUBMITTED",
             errors=[message],
         )
 
